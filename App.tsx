@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Account, AppConfig, LogEntry, SystemLog, WebDAVConfig, AccountStats } from './types';
-import { delay, getRandomUUID, checkCronMatch, getNextRunDate, formatTime, formatTimeWithMs, parseTokenInput, formatDuration } from './utils/helpers';
+import { delay, getRandomUUID, checkCronMatch, getNextRunDate, formatTime, parseTokenInput, formatDuration } from './utils/helpers';
 import * as Service from './services/msRewardsService';
 import { sendNotification } from './services/wxPusher';
 import AccountCard from './components/AccountCard';
