@@ -98,17 +98,17 @@ const App: React.FC = () => {
       stats: {
         readProgress: acc.stats?.readProgress || 0,
         readMax: acc.stats?.readMax || 30,
-        pcSearchProgress: acc.stats?.pcSearchProgress || 0, // 补充默认值
-        pcSearchMax: acc.stats?.pcSearchMax || 0,           // 补充默认值
-        mobileSearchProgress: acc.stats?.mobileSearchProgress || 0, // 补充默认值
-        mobileSearchMax: acc.stats?.mobileSearchMax || 0,           // 补充默认值
-        redeemGoal: acc.stats?.redeemGoal // 保留目标信息，如果存在
+        pcSearchProgress: acc.stats?.pcSearchProgress || 0, 
+        pcSearchMax: acc.stats?.pcSearchMax || 0,           
+        mobileSearchProgress: acc.stats?.mobileSearchProgress || 0, 
+        mobileSearchMax: acc.stats?.mobileSearchMax || 0,           
+        redeemGoal: acc.stats?.redeemGoal 
       },
       enabled: acc.enabled !== false,
-      cronEnabled: acc.cronEnabled !== false, // Preserve or Default true
+      cronEnabled: acc.cronEnabled !== false, 
       cronExpression: acc.cronExpression,
-      ignoreRisk: acc.ignoreRisk || false, // Ensure flag is preserved
-      webCheckInStreak: acc.webCheckInStreak || 0 // Init streak
+      ignoreRisk: acc.ignoreRisk || false, 
+      webCheckInStreak: acc.webCheckInStreak || 0 
     }));
   };
 
@@ -222,8 +222,21 @@ const App: React.FC = () => {
   const [showDataManage, setShowDataManage] = useState(false);
   const [monitorAccountId, setMonitorAccountId] = useState<string | null>(null);
 
-  useEffect(() => { localStorage.setItem('ms_rewards_accounts', JSON.stringify(accounts)); }, [accounts]);
-  useEffect(() => { localStorage.setItem('ms_rewards_config', JSON.stringify(config)); }, [config]);
+  // 性能优化：LocalStorage 防抖写入 (避免频繁 IO 阻塞 UI 线程)
+  useEffect(() => { 
+      const timer = setTimeout(() => {
+          localStorage.setItem('ms_rewards_accounts', JSON.stringify(accounts)); 
+      }, 1000);
+      return () => clearTimeout(timer);
+  }, [accounts]);
+
+  useEffect(() => { 
+      // 配置变更频率低，直接写入即可，但也加个小防抖更稳妥
+      const timer = setTimeout(() => {
+          localStorage.setItem('ms_rewards_config', JSON.stringify(config)); 
+      }, 500);
+      return () => clearTimeout(timer);
+  }, [config]);
 
   // Clock
   useEffect(() => {
@@ -283,13 +296,51 @@ const App: React.FC = () => {
     return () => clearInterval(timer);
   }, [config, isRunning]);
 
-  const addLog = (accountId: string, message: string, type: LogEntry['type'] = 'info') => {
-    setAccounts(prev => prev.map(acc => { if (acc.id === accountId) { return { ...acc, logs: [...acc.logs, { id: getRandomUUID(), timestamp: Date.now(), type, message }] }; } return acc; }));
-  };
-  const updateAccountStatus = (accountId: string, status: Account['status'], updates?: Partial<Account>) => { setAccounts(prev => prev.map(acc => { if (acc.id === accountId) return { ...acc, status, ...updates }; return acc; })); };
-  const handleEditAccount = (id: string, updates: Partial<Account>) => { setAccounts(prev => prev.map(acc => { if (acc.id === id) return { ...acc, ...updates }; return acc; })); };
+  const addLog = useCallback((accountId: string, message: string, type: LogEntry['type'] = 'info') => {
+    setAccounts(prev => prev.map(acc => { 
+        if (acc.id === accountId) { 
+            // 性能优化：限制日志最大长度为 100，避免内存无限膨胀
+            const newLogs = [...acc.logs, { id: getRandomUUID(), timestamp: Date.now(), type, message }];
+            if (newLogs.length > 100) newLogs.shift();
+            return { ...acc, logs: newLogs }; 
+        } 
+        return acc; 
+    }));
+  }, []);
+
+  const updateAccountStatus = useCallback((accountId: string, status: Account['status'], updates?: Partial<Account>) => { 
+      setAccounts(prev => prev.map(acc => { if (acc.id === accountId) return { ...acc, status, ...updates }; return acc; })); 
+  }, []);
+
+  const handleEditAccount = useCallback((id: string, updates: Partial<Account>) => { 
+      setAccounts(prev => prev.map(acc => { if (acc.id === id) return { ...acc, ...updates }; return acc; })); 
+  }, []);
+
   const humanDelay = async (accountId: string) => { const ms = Math.floor(Math.random() * (config.maxDelay - config.minDelay + 1) + config.minDelay) * 1000; addLog(accountId, `等待随机延迟 ${ms/1000}秒...`); await delay(ms); };
-  const recordPointHistory = (accountId: string, points: number) => { if (!points) return; setAccounts(prev => prev.map(acc => { if (acc.id === accountId) { const history = acc.pointHistory || []; const last = history[history.length - 1]; if (last && last.points === points) { const lastDate = new Date(last.date).toDateString(); const today = new Date().toDateString(); if (lastDate === today) { return acc; } } if (last && (Date.now() - new Date(last.date).getTime() < 60000)) { last.points = points; last.date = new Date().toISOString(); return { ...acc, pointHistory: [...history] }; } const newHistory = [...history, { date: new Date().toISOString(), points }]; if (newHistory.length > 200) newHistory.shift(); return { ...acc, pointHistory: newHistory }; } return acc; })); };
+  
+  const recordPointHistory = useCallback((accountId: string, points: number) => { 
+      if (!points) return; 
+      setAccounts(prev => prev.map(acc => { 
+          if (acc.id === accountId) { 
+              const history = acc.pointHistory || []; 
+              const last = history[history.length - 1]; 
+              if (last && last.points === points) { 
+                  const lastDate = new Date(last.date).toDateString(); 
+                  const today = new Date().toDateString(); 
+                  if (lastDate === today) { return acc; } 
+              } 
+              if (last && (Date.now() - new Date(last.date).getTime() < 60000)) { 
+                  last.points = points; 
+                  last.date = new Date().toISOString(); 
+                  return { ...acc, pointHistory: [...history] }; 
+              } 
+              const newHistory = [...history, { date: new Date().toISOString(), points }]; 
+              if (newHistory.length > 200) newHistory.shift(); 
+              return { ...acc, pointHistory: newHistory }; 
+          } 
+          return acc; 
+      })); 
+  }, []);
   
   // 执行自动本地备份
   const performAutoBackup = async () => {
@@ -324,12 +375,17 @@ const App: React.FC = () => {
       }
   };
 
-  const processAccount = async (account: Account): Promise<{ earned: number; totalPoints: number; status: 'success'|'error'|'risk'; stats: AccountStats; webCheckInStreak: number }> => {
+  const processAccount = async (account: Account, specificTask?: 'sign' | 'read'): Promise<{ earned: number; totalPoints: number; status: 'success'|'error'|'risk'; stats: AccountStats; webCheckInStreak: number }> => {
     const { id, refreshToken, accessToken: initialAccessToken, tokenExpiresAt, name, ignoreRisk, lastRunTime } = account;
     
     updateAccountStatus(id, 'running', { lastRunTime: Date.now() });
-    addLog(id, "🚀 任务序列已启动...");
-    addSystemLog(`[${name}] 启动任务序列`, 'info', 'Scheduler');
+    
+    let startMsg = "🚀 任务序列已启动...";
+    if (specificTask === 'sign') startMsg = "🚀 仅执行: 每日签到";
+    if (specificTask === 'read') startMsg = "🚀 仅执行: 阅读任务";
+    addLog(id, startMsg);
+    
+    addSystemLog(`[${name}] 启动任务 ${specificTask ? `(${specificTask})` : '(All)'}`, 'info', 'Scheduler');
 
     try {
       let currentAccessToken = initialAccessToken;
@@ -367,11 +423,9 @@ const App: React.FC = () => {
       const isExecutedToday = lastRunTime && new Date(lastRunTime).toDateString() === new Date().toDateString();
       
       // 检查 Sapphire 签到是否已完成 (API 状态)
-      // 通常 checkInProgress > 0 或者 checkInProgress >= checkInMax 代表已签
       const isSapphirePreDone = (dashboard.stats.checkInProgress || 0) > 0;
 
       // 如果 Sapphire 已签，强制同步 Web 状态为完成，并处理 Streak
-      // (即使用户选择不运行 runSign，或者任务跳过，只要状态是 Done，Web 也应该算 Done)
       if (isSapphirePreDone) {
           // Sync UI state
           dashboard.stats.dailySetMax = 1;
@@ -388,7 +442,11 @@ const App: React.FC = () => {
           });
       }
 
-      if (config.runSign) {
+      // Determine tasks to run
+      const enableSign = specificTask === 'sign' || (!specificTask && config.runSign);
+      const enableRead = specificTask === 'read' || (!specificTask && config.runRead);
+
+      if (enableSign) {
           if (isSapphirePreDone) {
               addLog(id, "💎 Sapphire 签到任务已达标 (API Check)，跳过执行。", "info");
           } else {
@@ -403,7 +461,7 @@ const App: React.FC = () => {
                   dashboard.stats.checkInMax = Math.max(dashboard.stats.checkInMax || 1, 1);
                   dashboard.stats.checkInProgress = Math.max(dashboard.stats.checkInProgress || 1, 1);
                   
-                  if (!isExecutedToday) { // Prevent double count if pre-check failed but execution worked (rare)
+                  if (!isExecutedToday) { 
                       currentWebStreak += 1;
                       addLog(id, `📅 Web 签到记录更新: 连胜 ${currentWebStreak} 天`, 'info');
                   }
@@ -422,7 +480,7 @@ const App: React.FC = () => {
           }
       }
 
-      if (config.runRead) {
+      if (enableRead) {
            let currentProgress = dashboard.stats.readProgress;
            const max = dashboard.stats.readMax;
            if (currentProgress < max) {
@@ -531,9 +589,6 @@ const App: React.FC = () => {
       }
       const webCheckInStr = webDays > 0 ? `已签 ${webDays} 天` : "未签到";
 
-      // 格式调整：
-      // 积分: (本轮:+xx | 较昨日:+xx)
-      // 其他: 取消括号，用 | 分割
       return `[${index}] ${account.name}
 ● 状态: ${statusStr}
 ● 积分: ${result.totalPoints.toLocaleString()} (本轮:${earnedStr} | 较昨日:${diffStr})
@@ -544,7 +599,7 @@ const App: React.FC = () => {
 -----------------------`;
   };
 
-  const runSingleAccountAutomatically = async (accountId: string, isManual: boolean) => {
+  const runSingleAccountAutomatically = async (accountId: string, isManual: boolean, specificTask?: 'sign' | 'read') => {
       const account = accounts.find(a => a.id === accountId);
       if (!account) return;
       if (account.status === 'running') {
@@ -553,10 +608,10 @@ const App: React.FC = () => {
       }
       
       if (isManual) {
-          addSystemLog(`[Manual] 启动账号: ${account.name}`, 'info', 'User');
+          addSystemLog(`[Manual] 启动账号: ${account.name} ${specificTask ? `(${specificTask})` : ''}`, 'info', 'User');
       }
 
-      const result = await processAccount(account);
+      const result = await processAccount(account, specificTask);
       
       if (config.wxPusher?.enabled && config.allowSinglePush !== false) {
           const targets = config.wxPusher.targets.filter(t => 
@@ -601,8 +656,7 @@ ${reportBlock}
       }
   };
 
-  // 独立的一键刷新功能 (返回更新后的 Accounts Map)
-  const handleRefreshAll = async (isInternalCall: boolean = false): Promise<Map<string, Account>> => {
+  const handleRefreshAll = useCallback(async (isInternalCall: boolean = false): Promise<Map<string, Account>> => {
       const source = isInternalCall ? 'Scheduler' : 'User';
       if (!isInternalCall) {
           if (isRunning) {
@@ -617,49 +671,39 @@ ${reportBlock}
       
       const refreshedMap = new Map<string, Account>();
 
-      // 为了尽快刷新，使用 Promise.all 并发 (每次 3 个)
       const chunkSize = 3;
       for (let i = 0; i < targets.length; i += chunkSize) {
           const chunk = targets.slice(i, i + chunkSize);
           await Promise.all(chunk.map(async (acc) => {
               try {
-                  // 仅获取 Dashboard 数据，不执行任务
                   let currentToken = acc.accessToken;
                   if (!acc.tokenExpiresAt || Date.now() > acc.tokenExpiresAt - TOKEN_REFRESH_THRESHOLD) {
                       const t = await Service.renewToken(acc.refreshToken, config.proxyUrl);
                       currentToken = t.accessToken;
-                      // Update to 'refreshing' status instead of 'running'
                       updateAccountStatus(acc.id, 'refreshing', { accessToken: t.accessToken, refreshToken: t.newRefreshToken, tokenExpiresAt: Date.now() + t.expiresIn * 1000 });
                   } else {
                       updateAccountStatus(acc.id, 'refreshing');
                   }
                   
                   const d = await Service.getDashboardData(currentToken!, config.proxyUrl, acc.ignoreRisk);
-                  
                   updateAccountStatus(acc.id, 'idle', { totalPoints: d.totalPoints, stats: d.stats });
-                  
-                  // 构建更新后的对象放入 Map
                   refreshedMap.set(acc.id, { ...acc, totalPoints: d.totalPoints, stats: d.stats, accessToken: currentToken });
               } catch (e: any) {
                   updateAccountStatus(acc.id, 'error');
                   addLog(acc.id, `刷新失败: ${e.message}`, 'error');
-                  refreshedMap.set(acc.id, acc); // 失败则保留原样
+                  refreshedMap.set(acc.id, acc); 
               }
           }));
           if (i + chunkSize < targets.length) await delay(1000);
       }
 
       addSystemLog(`✅ 批量刷新完成`, 'success', source);
-      
-      // 更新全局预检标记，表明状态已是最新
       hasPerformedPreCheck.current = true;
-      
       if (!isInternalCall) setIsRunning(false);
-      
       return refreshedMap;
-  };
+  }, [isRunning, config.proxyUrl, updateAccountStatus, addLog, addSystemLog]);
 
-  const handleRunAll = async (isAuto: boolean) => {
+  const handleRunAll = useCallback(async (isAuto: boolean) => {
       if (isRunning) {
           if (!isAuto) { 
               stopTaskRef.current = true;
@@ -672,44 +716,30 @@ ${reportBlock}
       stopTaskRef.current = false;
       const source = isAuto ? 'Scheduler' : 'User';
       
-      const isToday = (ts: number) => {
-          if (!ts) return false;
-          const date = new Date(ts);
-          const now = new Date();
-          return date.getDate() === now.getDate() && date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
-      };
-
-      // Phase 1: 预检/刷新逻辑
       let refreshedAccountsMap = new Map<string, Account>();
       
       if (!hasPerformedPreCheck.current) {
-          // 仅在未执行过预检时运行
           addSystemLog("🚀 一键启动: 正在首次预检账号状态...", 'info', source);
           refreshedAccountsMap = await handleRefreshAll(true);
       } else {
           addSystemLog("🚀 一键启动: 状态已就绪，跳过预检，直接执行...", 'info', source);
-          // 如果跳过预检，直接基于当前 accountsRef 构建 map
           accountsRef.current.forEach(a => refreshedAccountsMap.set(a.id, a));
       }
 
-      // Phase 2: 筛选并执行
-      // 使用 refreshedAccountsMap 中的最新数据来判断是否跳过
       const targets = accountsRef.current.filter(a => {
           if (a.enabled === false) return false;
-          if (a.status === 'risk') return false; // 风控账号不自动跑
+          if (a.status === 'risk') return false; 
           
-          // 获取该账号的最新状态 (如果刷新失败则用旧的)
           const freshAcc = refreshedAccountsMap.get(a.id) || a;
 
           if (config.skipDailyCompleted) {
               const s = freshAcc.stats;
-              // 判定逻辑：阅读满 + Sapphire满 (或无) + Web满 (或无)
               const isReadDone = s.readProgress >= s.readMax;
               const isSapphireDone = (s.checkInMax || 0) === 0 || (s.checkInProgress || 0) > 0;
               const isWebDone = (s.dailySetMax || 0) === 0 || (s.dailySetProgress || 0) >= (s.dailySetMax || 1);
               
               if (isReadDone && isSapphireDone && isWebDone) {
-                  return false; // 跳过
+                  return false; 
               }
           }
           return true;
@@ -775,12 +805,11 @@ ${reportBlock}
                   let failCount = 0;
                   let reportBody = "";
                   
-                  // 积分池计算：仅统计本次推送包含的账号的总积分
                   let currentPushPool = 0;
 
                   targetResults.forEach((item, idx) => {
                       totalEarned += item.result.earned;
-                      currentPushPool += item.result.totalPoints; // 使用最新执行结果的积分
+                      currentPushPool += item.result.totalPoints; 
                       if (item.result.status === 'success') successCount++; else failCount++;
                       reportBody += generateAccountReportBlock(item.account, item.result, idx + 1) + "\n";
                   });
@@ -821,13 +850,12 @@ ${reportBody.trim()}
               }
           }
       }
-  };
+  }, [isRunning, config, handleRefreshAll, addSystemLog]);
 
-  const refreshSingleAccount = async (id: string) => {
-      const acc = accounts.find(a => a.id === id);
+  const refreshSingleAccount = useCallback(async (id: string) => {
+      const acc = accountsRef.current.find(a => a.id === id);
       if(!acc || acc.status === 'running' || acc.status === 'refreshing') return;
       
-      // Update to 'refreshing' status
       updateAccountStatus(id, 'refreshing');
       addLog(id, "正在刷新状态...");
       
@@ -869,7 +897,7 @@ ${reportBody.trim()}
           updateAccountStatus(id, 'error');
           addLog(id, `刷新失败: ${e.message}`, 'error');
       }
-  };
+  }, [config.proxyUrl, updateAccountStatus, addLog, recordPointHistory]);
 
   const handleDataImport = (newAccounts: Account[], newConfig: AppConfig | null, mode: 'merge' | 'overwrite', importedSystemLogs?: SystemLog[]) => { setAccounts(sanitizeAccounts(newAccounts)); if(newConfig) setConfig(c => ({...c, ...newConfig})); };
   const handleWebDAVImport = (newAccounts: Account[], newConfig?: AppConfig, importedSystemLogs?: SystemLog[]) => { handleDataImport(newAccounts, newConfig || null, 'overwrite', importedSystemLogs); };
@@ -907,7 +935,12 @@ ${reportBody.trim()}
       addSystemLog(`添加新账号: ${newAccount.name}`, 'success', 'System'); 
   };
   
-  const handleRemoveAccount = (id: string) => { const name = accounts.find(a => a.id === id)?.name; setAccounts(prev => prev.filter(acc => acc.id !== id)); if (monitorAccountId === id) setMonitorAccountId(null); addSystemLog(`删除账号: ${name}`, 'warning', 'System'); };
+  const handleRemoveAccount = useCallback((id: string) => { 
+      const name = accountsRef.current.find(a => a.id === id)?.name; 
+      setAccounts(prev => prev.filter(acc => acc.id !== id)); 
+      if (monitorAccountId === id) setMonitorAccountId(null); 
+      addSystemLog(`删除账号: ${name}`, 'warning', 'System'); 
+  }, [monitorAccountId, addSystemLog]);
   
   const handleAddCopyAuthLink = async () => {
       const scope = encodeURIComponent("service::prod.rewardsplatform.microsoft.com::MBI_SSL offline_access openid profile");
@@ -1002,8 +1035,8 @@ ${reportBody.trim()}
       return { display: 'grid', gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gap }; 
   };
   
-  const handleEditModeChange = (id: string, isEditing: boolean) => { setEditingAccountIds(prev => isEditing ? [...prev, id] : prev.filter(eid => eid !== id)); };
-  const handleOpenCronForAccount = (initialValue: string, callback: (val: string) => void) => { setCronGenTarget({ value: initialValue, callback }); setShowCronGenerator(true); };
+  const handleEditModeChange = useCallback((id: string, isEditing: boolean) => { setEditingAccountIds(prev => isEditing ? [...prev, id] : prev.filter(eid => eid !== id)); }, []);
+  const handleOpenCronForAccount = useCallback((initialValue: string, callback: (val: string) => void) => { setCronGenTarget({ value: initialValue, callback }); setShowCronGenerator(true); }, []);
   const handleApplyCronGen = (expr: string) => { if (cronGenTarget) { cronGenTarget.callback(expr); setCronGenTarget(null); } setShowCronGenerator(false); };
 
   useEffect(() => {
@@ -1200,7 +1233,7 @@ ${reportBody.trim()}
                             onRemove={handleRemoveAccount} 
                             onOpenMonitor={(id) => setMonitorAccountId(id)} 
                             onRefresh={refreshSingleAccount} 
-                            onRunSingle={(id) => runSingleAccountAutomatically(id, true)}
+                            onRunSingle={(id, type) => runSingleAccountAutomatically(id, true, type)}
                             onEditAccount={handleEditAccount}
                             onEditModeChange={(isEditing) => handleEditModeChange(acc.id, isEditing)}
                             onOpenCronGenerator={handleOpenCronForAccount}

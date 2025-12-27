@@ -4,31 +4,33 @@ import https from 'https';
 import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import readline from 'readline';
 
 /**
  * ============================================================================
- *  MS REWARDS GEEK CLI (TITANIUM EDITION)
+ *  MS REWARDS GEEK CLI (INTERACTIVE EDITION)
  * ============================================================================
- *  纯 Node.js 实现，无浏览器依赖，直连微软服务器。
+ *  纯 Node.js 实现，交互式命令行界面。
  * 
  *  [使用说明]
- *  1. 从 Web 版 "本地备份" 导出一个 JSON 文件。
- *  2. 将其重命名为 'accounts.json' 并放在项目根目录。
- *  3. 运行: npm run geek
+ *  1. 运行: npm run geek
+ *  2. 使用数字键选择功能
  * ============================================================================
  */
 
-// --- 配置区域 ---
-const CONFIG = {
-    // 每次请求间的最小/最大延迟 (毫秒)
+// --- 全局状态 & 配置 ---
+const STATE = {
+    // 默认配置
     minDelay: 2000,
     maxDelay: 5000,
-    // 是否并发执行 (true: 同时跑所有号, false: 一个个跑)
-    concurrent: false, 
-    // 忽略风控警告强制执行
+    concurrent: false,
     ignoreRisk: false,
-    // 存档文件名
-    dbFile: 'accounts.json'
+    dbFile: 'accounts.json',
+    
+    // 运行时数据
+    dbData: null,
+    accounts: [],
+    dbPath: ''
 };
 
 // --- 常量定义 ---
@@ -43,6 +45,7 @@ const COLORS = {
     magenta: "\x1b[35m",
     cyan: "\x1b[36m",
     bgBlue: "\x1b[44m",
+    bgRed: "\x1b[41m",
 };
 
 const CN_HEADERS = {
@@ -58,9 +61,16 @@ const CN_HEADERS = {
 
 // --- 工具函数 ---
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-const randomDelay = () => delay(Math.floor(Math.random() * (CONFIG.maxDelay - CONFIG.minDelay + 1) + CONFIG.minDelay));
+const randomDelay = () => delay(Math.floor(Math.random() * (STATE.maxDelay - STATE.minDelay + 1) + STATE.minDelay));
 const getTimestamp = () => new Date().toLocaleTimeString('en-US', { hour12: false });
 const getRandomUUID = () => crypto.randomUUID();
+
+const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+});
+const ask = (q) => new Promise(resolve => rl.question(COLORS.cyan + q + COLORS.reset, resolve));
+const clearScreen = () => console.log('\x1Bc');
 
 const log = (type, msg, accountName = 'SYSTEM') => {
     const time = `[${getTimestamp()}]`;
@@ -79,8 +89,7 @@ const log = (type, msg, accountName = 'SYSTEM') => {
     console.log(`${COLORS.dim}${time}${COLORS.reset} ${COLORS.bright}${label}${COLORS.reset} | ${color}${icon} ${msg}${COLORS.reset}`);
 };
 
-// 简单的 Fetch 封装 (Node.js 原生 fetch 在 v18+ 可用，这里用 https 模块以兼容旧版或更底层控制)
-// 为了简便，我们检测环境，如果有 fetch (Node 18+) 则使用，否则报错提示升级
+// Node.js Fetch Wrapper
 if (!globalThis.fetch) {
     console.error(COLORS.red + "Error: Node.js version too low. Please upgrade to Node 18+." + COLORS.reset);
     process.exit(1);
@@ -88,19 +97,14 @@ if (!globalThis.fetch) {
 
 const request = async (url, options = {}) => {
     const headers = { ...options.headers };
-    
-    // 自动处理 JSON
     if (options.body && typeof options.body === 'object') {
         headers['Content-Type'] = 'application/json';
         options.body = JSON.stringify(options.body);
     }
-
-    // 简单的重试机制
     let retries = 3;
     while (retries > 0) {
         try {
-            const res = await fetch(url, { ...options, headers });
-            return res;
+            return await fetch(url, { ...options, headers });
         } catch (e) {
             retries--;
             if (retries === 0) throw e;
@@ -156,7 +160,6 @@ const TaskService = {
 
     sign: async (token) => {
         const now = new Date();
-        // date number YYYYMMDD
         const dateNum = parseInt(`${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}`);
         
         const payload = {
@@ -181,9 +184,8 @@ const TaskService = {
         });
         
         const data = await res.json();
-        // 检查结果
         if (data.response && data.response.activity) return data.response.activity.p || 0;
-        if (JSON.stringify(data).toLowerCase().includes('already')) return 0; // 已签到
+        if (JSON.stringify(data).toLowerCase().includes('already')) return 0;
         throw new Error(data.message || "Sign Failed");
     },
 
@@ -209,7 +211,39 @@ const TaskService = {
     }
 };
 
-// --- 主流程逻辑 ---
+// --- 数据管理 ---
+
+const DB = {
+    init: () => {
+        const __dirname = path.dirname(fileURLToPath(import.meta.url));
+        STATE.dbPath = path.join(__dirname, STATE.dbFile);
+
+        if (!fs.existsSync(STATE.dbPath)) {
+            clearScreen();
+            console.log(COLORS.red + `[Error] 未找到配置文件: ${STATE.dbFile}` + COLORS.reset);
+            console.log(`\n请从 Web 版导出 '本地备份 (JSON)'，重命名为 'accounts.json' 并放入项目根目录。`);
+            process.exit(1);
+        }
+
+        try {
+            const raw = fs.readFileSync(STATE.dbPath, 'utf-8');
+            STATE.dbData = JSON.parse(raw);
+            STATE.accounts = STATE.dbData.accounts || [];
+        } catch (e) {
+            console.error('JSON Parse Error', e);
+            process.exit(1);
+        }
+    },
+    save: () => {
+        if (!STATE.dbData) return;
+        STATE.dbData.accounts = STATE.accounts;
+        STATE.dbData.exportDate = new Date().toISOString();
+        fs.writeFileSync(STATE.dbPath, JSON.stringify(STATE.dbData, null, 2), 'utf-8');
+        log('system', '数据已回写至磁盘 (Token/Points Updated)');
+    }
+};
+
+// --- 业务逻辑 ---
 
 const processAccount = async (account) => {
     const name = account.name || 'Unknown';
@@ -217,12 +251,12 @@ const processAccount = async (account) => {
     let currentRefreshToken = account.refreshToken;
     let updated = false;
 
-    log('info', '开始执行任务...', name);
+    log('info', '开始执行...', name);
 
     try {
-        // 1. 检查/刷新 Token
-        if (!account.tokenExpiresAt || Date.now() > account.tokenExpiresAt - 300000) { // 提前5分钟刷新
-            log('warn', 'Token 即将过期，正在刷新...', name);
+        // 1. Token 检查
+        if (!account.tokenExpiresAt || Date.now() > account.tokenExpiresAt - 300000) {
+            log('warn', 'Token 过期/即将过期，刷新中...', name);
             const tokens = await AuthService.renewToken(currentRefreshToken);
             currentToken = tokens.accessToken;
             currentRefreshToken = tokens.refreshToken;
@@ -233,50 +267,48 @@ const processAccount = async (account) => {
             log('success', 'Token 刷新成功', name);
         }
 
-        // 2. 获取初始状态
+        // 2. 初始状态
         const dashboard = await TaskService.getDashboard(currentToken);
         const startPoints = dashboard.totalPoints;
         
-        // 3. 执行签到
+        // 3. 签到
         await randomDelay();
         try {
             const earned = await TaskService.sign(currentToken);
-            if (earned > 0) log('success', `签到成功: +${earned} 分`, name);
-            else log('info', '今日已签到', name);
+            if (earned > 0) log('success', `签到 +${earned}`, name);
+            else log('info', '今日已签', name);
         } catch (e) {
-            log('error', `签到失败: ${e.message}`, name);
+            log('error', `签到异常: ${e.message}`, name);
         }
 
-        // 4. 执行阅读
-        const readMax = 30; // 假设30分
+        // 4. 阅读
         // 简单的阅读逻辑，循环读取
-        // 注意：这里没有复杂的进度判断，Geek模式假设每次运行都尝试读满
-        log('info', '开始阅读任务...', name);
+        log('info', '阅读任务开始...', name);
+        process.stdout.write(COLORS.dim + '      Progress: ' + COLORS.reset);
         for (let i = 0; i < 30; i++) {
-            await delay(1000 + Math.random() * 2000); // 快速阅读
+            await delay(1000 + Math.random() * 1500); 
             try {
                 await TaskService.read(currentToken);
-                process.stdout.write(COLORS.green + '.' + COLORS.reset); // 进度点
+                process.stdout.write(COLORS.green + '.' + COLORS.reset);
             } catch (e) {
                 process.stdout.write(COLORS.red + 'x' + COLORS.reset);
             }
         }
-        console.log(''); // 换行
+        console.log('');
 
         // 5. 最终状态
         const finalDash = await TaskService.getDashboard(currentToken);
         const totalEarned = finalDash.totalPoints - startPoints;
         
-        log('success', `任务完成! 本次收益: ${COLORS.bright}${totalEarned}${COLORS.reset} | 总分: ${COLORS.yellow}${finalDash.totalPoints}${COLORS.reset}`, name);
+        log('success', `完成! 收益: ${COLORS.bright}${totalEarned}${COLORS.reset} | 总分: ${COLORS.yellow}${finalDash.totalPoints}${COLORS.reset}`, name);
 
-        // 更新账号信息
         account.totalPoints = finalDash.totalPoints;
         account.lastRunTime = Date.now();
-        account.stats = finalDash.stats; // 简单的兼容
+        account.stats = finalDash.stats;
         updated = true;
 
     } catch (e) {
-        log('error', `致命错误: ${e.message}`, name);
+        log('error', `终止: ${e.message}`, name);
         if (e.message.includes('suspended')) {
             account.status = 'risk';
             updated = true;
@@ -286,10 +318,10 @@ const processAccount = async (account) => {
     return { updated, account };
 };
 
-// --- 主程序入口 ---
+// --- 菜单界面 ---
 
-const printBanner = () => {
-    console.clear();
+const printHeader = () => {
+    clearScreen();
     console.log(COLORS.blue + `
   ██████╗ ███████╗███████╗██╗  ██╗
  ██╔════╝ ██╔════╝██╔════╝██║ ██╔╝
@@ -298,67 +330,138 @@ const printBanner = () => {
  ╚██████╔╝███████╗███████╗██║  ██╗
   ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═╝
     ` + COLORS.reset);
-    console.log(`${COLORS.bgBlue} MS REWARDS TITANIUM CLI ${COLORS.reset} v3.9.1`);
+    console.log(`${COLORS.bgBlue} MS REWARDS GEEK CLI ${COLORS.reset} v3.9.1`);
+    console.log(`${COLORS.dim}----------------------------------------${COLORS.reset}`);
+    
+    const validCount = STATE.accounts.filter(a => a.enabled !== false).length;
+    const totalPoints = STATE.accounts.reduce((sum, acc) => sum + (acc.totalPoints || 0), 0);
+    
+    console.log(` 📦 账号: ${COLORS.bright}${STATE.accounts.length}${COLORS.reset} (启用: ${validCount})`);
+    console.log(` 💰 总分: ${COLORS.yellow}${totalPoints.toLocaleString()}${COLORS.reset}`);
     console.log(`${COLORS.dim}----------------------------------------${COLORS.reset}`);
 };
 
-const run = async () => {
-    printBanner();
+const Actions = {
+    runAll: async () => {
+        const targets = STATE.accounts.filter(a => a.enabled !== false);
+        if (targets.length === 0) {
+            console.log(COLORS.yellow + "没有启用的账号。" + COLORS.reset);
+            await ask("按回车返回...");
+            return;
+        }
 
-    const __dirname = path.dirname(fileURLToPath(import.meta.url));
-    const dbPath = path.join(__dirname, CONFIG.dbFile);
+        console.log(COLORS.green + `🚀 准备执行 ${targets.length} 个账号任务...` + COLORS.reset);
+        let hasUpdates = false;
 
-    if (!fs.existsSync(dbPath)) {
-        log('error', `未找到配置文件: ${CONFIG.dbFile}`);
-        console.log(`\n${COLORS.yellow}请从 Web 版导出 '本地备份 (JSON)'，重命名为 'accounts.json' 并放入项目根目录。${COLORS.reset}`);
-        process.exit(1);
-    }
+        for (const acc of targets) {
+            log('system', '----------------------------------------');
+            const { updated, account: updatedAcc } = await processAccount(acc);
+            if (updated) hasUpdates = true;
+            
+            // 更新内存
+            const idx = STATE.accounts.findIndex(a => a.id === acc.id);
+            if (idx !== -1) STATE.accounts[idx] = updatedAcc;
 
-    let dbData;
-    try {
-        const raw = fs.readFileSync(dbPath, 'utf-8');
-        dbData = JSON.parse(raw);
-    } catch (e) {
-        log('error', '配置文件 JSON 格式错误');
-        process.exit(1);
-    }
+            if (!STATE.concurrent && targets.indexOf(acc) < targets.length - 1) {
+                const waitTime = Math.floor(Math.random() * 3000) + 2000;
+                log('system', `等待 ${waitTime}ms ...`);
+                await delay(waitTime);
+            }
+        }
 
-    const accounts = dbData.accounts || [];
-    const validAccounts = accounts.filter(a => a.enabled !== false);
+        if (hasUpdates) DB.save();
+        console.log(`\n${COLORS.green}✅ 批量任务完成。${COLORS.reset}`);
+        await ask("按回车返回菜单...");
+    },
 
-    log('system', `加载了 ${accounts.length} 个账号，其中 ${validAccounts.length} 个启用。`);
+    listAccounts: async () => {
+        console.log(COLORS.cyan + "📋 账号列表" + COLORS.reset);
+        STATE.accounts.forEach((acc, i) => {
+            const status = acc.enabled === false ? `${COLORS.red}[禁用]${COLORS.reset}` : `${COLORS.green}[启用]${COLORS.reset}`;
+            const points = acc.totalPoints ? acc.totalPoints.toLocaleString() : '---';
+            const risk = acc.status === 'risk' ? ` ${COLORS.bgRed} RISK ${COLORS.reset}` : '';
+            console.log(` ${String(i + 1).padStart(2)}. ${status} ${acc.name.padEnd(20)} 💰 ${points}${risk}`);
+        });
+        console.log("");
+        await ask("按回车返回...");
+    },
+
+    settings: async () => {
+        while (true) {
+            printHeader();
+            console.log(COLORS.cyan + "⚙️  设置 (Settings)" + COLORS.reset);
+            console.log(` [1] 并发模式 (Concurrent): ${STATE.concurrent ? COLORS.green + 'ON' + COLORS.reset : COLORS.red + 'OFF' + COLORS.reset}`);
+            console.log(` [2] 最小延迟 (Min Delay):  ${STATE.minDelay} ms`);
+            console.log(` [3] 最大延迟 (Max Delay):  ${STATE.maxDelay} ms`);
+            console.log(` [4] 忽略风控 (Ignore Risk):${STATE.ignoreRisk ? COLORS.red + 'ON' + COLORS.reset : COLORS.green + 'OFF' + COLORS.reset}`);
+            console.log(` [0] 返回主菜单`);
+            console.log("");
+
+            const choice = await ask("请选择: ");
+            if (choice === '0') return;
+            if (choice === '1') STATE.concurrent = !STATE.concurrent;
+            if (choice === '4') STATE.ignoreRisk = !STATE.ignoreRisk;
+            if (choice === '2') {
+                const val = await ask("输入毫秒数: ");
+                if (!isNaN(val)) STATE.minDelay = parseInt(val);
+            }
+            if (choice === '3') {
+                const val = await ask("输入毫秒数: ");
+                if (!isNaN(val)) STATE.maxDelay = parseInt(val);
+            }
+        }
+    },
     
-    let hasUpdates = false;
-
-    // 执行循环
-    for (const acc of validAccounts) {
-        log('system', '----------------------------------------');
-        const { updated, account: updatedAcc } = await processAccount(acc);
-        if (updated) hasUpdates = true;
+    runSingle: async () => {
+        console.log(COLORS.cyan + "▶️  单号运行模式" + COLORS.reset);
+        const val = await ask("请输入账号序号 (1-" + STATE.accounts.length + "): ");
+        const idx = parseInt(val) - 1;
         
-        // 更新内存中的数据
-        const idx = accounts.findIndex(a => a.id === acc.id);
-        if (idx !== -1) accounts[idx] = updatedAcc;
-
-        if (!CONFIG.concurrent && validAccounts.indexOf(acc) < validAccounts.length - 1) {
-            const waitTime = Math.floor(Math.random() * 3000) + 2000;
-            log('system', `等待 ${waitTime}ms 进入下一个账号...`);
-            await delay(waitTime);
+        if (idx >= 0 && idx < STATE.accounts.length) {
+            const acc = STATE.accounts[idx];
+            console.log(`正在启动: ${acc.name}`);
+            const { updated, account: updatedAcc } = await processAccount(acc);
+            if (updated) {
+                STATE.accounts[idx] = updatedAcc;
+                DB.save();
+            }
+            await ask("任务结束，按回车返回...");
+        } else {
+            console.log(COLORS.red + "无效序号" + COLORS.reset);
+            await delay(1000);
         }
     }
-
-    // 保存回写
-    if (hasUpdates) {
-        log('system', '----------------------------------------');
-        log('system', '正在保存数据回磁盘...');
-        dbData.accounts = accounts;
-        // 仅在任务成功后更新导出时间，保留其他配置
-        dbData.exportDate = new Date().toISOString();
-        fs.writeFileSync(dbPath, JSON.stringify(dbData, null, 2), 'utf-8');
-        log('success', '数据已保存 (Token 已刷新)');
-    }
-
-    console.log(`\n${COLORS.green}All Tasks Completed.${COLORS.reset}`);
 };
 
-run().catch(e => console.error(e));
+const mainMenu = async () => {
+    while (true) {
+        printHeader();
+        console.log(` [1] 🚀 开始任务 (Run All Enabled)`);
+        console.log(` [2] 📋 查看账号 (List Accounts)`);
+        console.log(` [3] ▶️ 单号运行 (Run Specific)`);
+        console.log(` [4] ⚙️ 调整配置 (Settings)`);
+        console.log(` [0] 🚪 退出程序 (Exit)`);
+        console.log("");
+
+        const choice = await ask("请选择功能序号: ");
+
+        switch (choice) {
+            case '1': await Actions.runAll(); break;
+            case '2': await Actions.listAccounts(); break;
+            case '3': await Actions.runSingle(); break;
+            case '4': await Actions.settings(); break;
+            case '0': 
+                console.log("Bye!"); 
+                process.exit(0);
+                break;
+            default:
+                break;
+        }
+    }
+};
+
+// --- 启动 ---
+(async () => {
+    DB.init();
+    await mainMenu();
+})();

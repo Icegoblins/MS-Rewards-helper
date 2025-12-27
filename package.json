@@ -8,8 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "proxy": "node local_proxy.js",
-    "start": "concurrently -k -n \"PROXY,UI\" -c \"bgYellow.black,bgBlue.bold\" \"node local_proxy.js\" \"vite --open\"",
-    "geek": "node geek.js"
+    "start": "concurrently -k -n \"PROXY,UI\" -c \"bgYellow.black,bgBlue.bold\" \"node local_proxy.js\" \"vite --open\""
   },
   "dependencies": {
     "concurrently": "^9.0.0",
