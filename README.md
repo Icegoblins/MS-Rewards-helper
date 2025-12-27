@@ -1,4 +1,3 @@
-
 # MS Rewards 多账号助手 (Titanium Edition)
 
 ![Version](https://img.shields.io/badge/version-3.9.1-blueviolet)
@@ -44,27 +43,30 @@
 git clone https://github.com/Icegoblins/MS-Rewards-helper.git
 cd MS-Rewards-Helper
 ```
+**⚠️ 如果遇到 `port 443` 或 `Connection refused` 错误：**
+- **方法 A (推荐)**：直接点击 GitHub 页面右上角绿色的 **Code** 按钮 -> **Download ZIP**，下载后解压。
+- **方法 B (代理)**：如果你有本地代理工具 (例如端口 7890)，请配置 Git：
+  ```bash
+  git config --global http.proxy http://127.0.0.1:7890
+  git config --global https.proxy http://127.0.0.1:7890
+  ```
 
-### 3. 安装依赖
+### 3. 启动服务 (推荐)
+
+**方式 A：使用一键启动器 (推荐)**
+- **Windows**: 双击运行根目录下的 `start.bat`。
+- **macOS / Linux**: 在终端运行 `./start.sh` (需先赋予执行权限 `chmod +x start.sh`)。
+
+> 启动器会自动检测环境，如果是第一次运行，它会自动执行 `npm install` 安装依赖，随后同时启动后台代理和网页前端。
+
+**方式 B：手动安装与启动**
+如果您喜欢手动控制，可以分步执行：
 ```bash
+# 1. 安装依赖
 npm install
-```
 
-### 4. 启动服务 (双进程模式)
-
-本系统由 **前端 UI** 和 **本地代理服务** 组成，需同时启动以保证功能正常。
-
-**终端窗口 A (代理服务 - 核心):**
-此服务用于解决 CORS 跨域问题并保护您的真实 IP (防止积分跨区)，同时提供本地文件读写能力。
-```bash
-node local_proxy.js
-# 成功输出: ✅ 本地代理服务 v2.8 (Full FS Support) 已启动! 监听: 3001
-```
-
-**终端窗口 B (网页界面):**
-```bash
-npm run dev
-# 浏览器将自动打开 http://localhost:5173
+# 2. 启动服务 (将同时运行代理和网页)
+npm start
 ```
 
 ---
@@ -97,6 +99,8 @@ npm run dev
 
 ```text
 /
+├── start.bat           # [Win] 一键启动脚本
+├── start.sh            # [Mac/Linux] 一键启动脚本
 ├── local_proxy.js      # [核心] 本地代理与文件系统服务 (Node.js)
 ├── src/
 │   ├── components/     # React UI 组件 (Modals, Cards, Charts...)
