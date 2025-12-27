@@ -1,3 +1,4 @@
+
 {
   "name": "ms-rewards-helper",
   "private": true,
@@ -7,9 +8,11 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "proxy": "node local_proxy.js"
+    "proxy": "node local_proxy.js",
+    "start": "concurrently -k -n \"PROXY,UI\" -c \"bgYellow.black,bgBlue.bold\" \"node local_proxy.js\" \"vite --open\""
   },
   "dependencies": {
+    "concurrently": "^9.0.0",
     "croner": "^8.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
