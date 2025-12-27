@@ -1,0 +1,5 @@
+{
+  "name": "MS Rewards 多账号助手",
+  "description": "基于 React 重构的微软积分助手，专注于自动签入与阅读任务，支持多账号自动切换与管理。",
+  "requestFramePermissions": []
+}

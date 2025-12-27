@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Bing Cookie 提取助手",
+  "version": "1.4",
+  "description": "一键提取 Bing 搜索与 Rewards 所需的完整 Cookie 凭证。",
+  "permissions": [
+    "cookies",
+    "activeTab",
+    "tabs"
+  ],
+  "host_permissions": [
+    "*://*.bing.com/*",
+    "*://bing.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "获取 Bing Cookie"
+  }
+}
