@@ -19,9 +19,20 @@ export interface Account {
   ignoreRisk?: boolean; // 是否忽略风控警告强制执行 (New)
 }
 
+export interface RedeemGoal {
+  title: string;
+  price: number;
+  imageUrl?: string;
+}
+
 export interface AccountStats {
   readProgress: number;
   readMax: number;
+  pcSearchProgress: number;     // PC 搜索进度
+  pcSearchMax: number;          // PC 搜索上限
+  mobileSearchProgress: number; // 移动端搜索进度
+  mobileSearchMax: number;      // 移动端搜索上限
+  redeemGoal?: RedeemGoal;      // 兑换目标 (New)
 }
 
 export interface PointHistoryItem {

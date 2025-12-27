@@ -98,6 +98,11 @@ const App: React.FC = () => {
       stats: {
         readProgress: acc.stats?.readProgress || 0,
         readMax: acc.stats?.readMax || 30,
+        pcSearchProgress: acc.stats?.pcSearchProgress || 0, // 补充默认值
+        pcSearchMax: acc.stats?.pcSearchMax || 0,           // 补充默认值
+        mobileSearchProgress: acc.stats?.mobileSearchProgress || 0, // 补充默认值
+        mobileSearchMax: acc.stats?.mobileSearchMax || 0,           // 补充默认值
+        redeemGoal: acc.stats?.redeemGoal // 保留目标信息，如果存在
       },
       enabled: acc.enabled !== false,
       cronEnabled: acc.cronEnabled !== false, // Preserve or Default true
@@ -152,7 +157,7 @@ const App: React.FC = () => {
       localStorage.setItem('ms_rewards_layout_widgets', JSON.stringify(visibleWidgets));
   }, [visibleWidgets]);
 
-  // 系统日志状态
+  // System logs state
   const [systemLogs, setSystemLogs] = useState<SystemLog[]>([]);
   const addSystemLog = useCallback((message: string, type: SystemLog['type'] = 'info', source: string = 'System') => {
       setSystemLogs(prev => [...prev, { id: getRandomUUID(), timestamp: Date.now(), type, message, source }].slice(-100)); 
@@ -161,7 +166,7 @@ const App: React.FC = () => {
   const [isRunning, setIsRunning] = useState(false);
   const stopTaskRef = useRef(false); // 用于中断批量任务
   
-  // 模态框状态
+  // Modals state
   const [showCronSettings, setShowCronSettings] = useState(false); 
   const [showCronGenerator, setShowCronGenerator] = useState(false); 
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
@@ -171,52 +176,48 @@ const App: React.FC = () => {
   
   const [cronGenTarget, setCronGenTarget] = useState<{ value: string, callback: (val: string) => void } | null>(null);
 
-  // 倒计时标签
+  // Labels
   const [nextRunLabel, setNextRunLabel] = useState('未开启');
   const [nextSyncLabelNutstore, setNextSyncLabelNutstore] = useState('未开启'); 
   const [nextSyncLabelInfini, setNextSyncLabelInfini] = useState('未开启');
   const [nextLocalBackupLabel, setNextLocalBackupLabel] = useState('未开启'); 
   
-  // HUD 系统时钟
+  // HUD System Clock
   const [systemTime, setSystemTime] = useState(new Date());
 
-  // 拖拽排序状态
+  // Drag and Drop
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [editingAccountIds, setEditingAccountIds] = useState<string[]>([]);
   
-  const syncLocksRef = useRef<{ [key: string]: boolean }>({});
-
-  // 添加账号表单
+  // Add Account Form
   const [newAccountToken, setNewAccountToken] = useState('');
   const [newAccountAccessToken, setNewAccountAccessToken] = useState(''); 
   const [newAccountName, setNewAccountName] = useState('');
   const [newAccountExpiresIn, setNewAccountExpiresIn] = useState(0);
   
-  // 添加账号 - Token 处理状态
+  // Add Account Token Steps
   const [addTokenStep, setAddTokenStep] = useState<0 | 1>(0);
   const [addAuthFeedback, setAddAuthFeedback] = useState('');
   const [addTokenFeedback, setAddTokenFeedback] = useState('');
-  const [addTokenError, setAddTokenError] = useState(''); // Token 错误显示
+  const [addTokenError, setAddTokenError] = useState(''); 
   const pendingAddTokenRef = useRef<{ type: 'code' | 'token', value: string } | null>(null);
   
   // Paste Trap
   const [showAddPasteTrap, setShowAddPasteTrap] = useState(false);
-  const [addPasteTrapError, setAddPasteTrapError] = useState(''); // Modal内部错误
+  const [addPasteTrapError, setAddPasteTrapError] = useState('');
 
-  // 弹窗状态
+  // Other Modals
   const [showProxyGuide, setShowProxyGuide] = useState(false);
   const [showWebDAV, setShowWebDAV] = useState(false);
   const [showDataManage, setShowDataManage] = useState(false);
   const [monitorAccountId, setMonitorAccountId] = useState<string | null>(null);
 
-  const abortControllerRef = useRef<AbortController | null>(null);
-
   useEffect(() => { localStorage.setItem('ms_rewards_accounts', JSON.stringify(accounts)); }, [accounts]);
   useEffect(() => { localStorage.setItem('ms_rewards_config', JSON.stringify(config)); }, [config]);
 
-  // HUD 时钟
+  // Clock
   useEffect(() => {
       const timer = setInterval(() => setSystemTime(new Date()), 30); 
       return () => clearInterval(timer);
@@ -239,7 +240,6 @@ const App: React.FC = () => {
       </div>
   );
 
-  // 辅助函数：根据开关状态生成按钮样式
   const getButtonStyle = (enabled: boolean | undefined, type: keyof typeof FEATURE_COLORS) => {
       const colors = FEATURE_COLORS[type];
       const indicatorColor = config.forceGreenIndicators ? 'bg-green-500' : colors.dot;
@@ -247,11 +247,8 @@ const App: React.FC = () => {
       let baseClass = 'px-4 py-2 border rounded-lg transition-colors flex items-center gap-2 shadow-sm relative whitespace-nowrap';
       
       if (config.showButtonHighlight && enabled) {
-          // 高亮模式
           return `${baseClass} ${colors.bg} ${colors.border} ${colors.text}`;
       }
-      
-      // 默认模式
       return `${baseClass} bg-gray-800/80 border-gray-700 text-gray-300 hover:border-gray-500`;
   };
 
@@ -259,12 +256,10 @@ const App: React.FC = () => {
       if (!enabled) return null;
       const colors = FEATURE_COLORS[type];
       const indicatorColor = config.forceGreenIndicators ? 'bg-green-500' : colors.dot;
-      // 如果未开启高亮，给指示灯加点光晕
       const shadowClass = !config.showButtonHighlight ? 'shadow-[0_0_8px_rgba(255,255,255,0.4)]' : '';
       return <span className={`w-2 h-2 rounded-full ${indicatorColor} ${shadowClass}`}></span>;
   };
 
-  // ... (Core logic restoration) ...
   useEffect(() => {
     const calculateCountdown = (expression: string | undefined, enabled: boolean | undefined) => {
          if (!enabled || !expression) return '未开启';
@@ -284,8 +279,6 @@ const App: React.FC = () => {
     const timer = setInterval(updateCountdowns, 1000); 
     return () => clearInterval(timer);
   }, [config, isRunning]);
-
-  // ... (Rest of component functions omitted for brevity, identical to previous file except AccountCard prop)
 
   const addLog = (accountId: string, message: string, type: LogEntry['type'] = 'info') => {
     setAccounts(prev => prev.map(acc => { if (acc.id === accountId) { return { ...acc, logs: [...acc.logs, { id: getRandomUUID(), timestamp: Date.now(), type, message }] }; } return acc; }));
@@ -321,15 +314,19 @@ const App: React.FC = () => {
       }
       if (!currentAccessToken) throw new Error("Token 无效");
 
-      // Pass ignoreRisk to service
       const dashboard = await Service.getDashboardData(currentAccessToken, config.proxyUrl, ignoreRisk);
       const startPoints = dashboard.totalPoints;
       updateAccountStatus(id, 'running', { totalPoints: startPoints, stats: dashboard.stats });
+      
+      // 新增：如果发现目标，记录日志
+      if (dashboard.stats.redeemGoal) {
+          addLog(id, `🎯 追踪到目标: ${dashboard.stats.redeemGoal.title}`, 'success');
+      }
+
       recordPointHistory(id, startPoints);
 
       if (config.runSign) {
           addLog(id, "正在执行每日签入...");
-          // Pass ignoreRisk
           const res = await Service.taskSign(currentAccessToken, config.proxyUrl, ignoreRisk);
           if (res.success) {
               addLog(id, res.message, "success");
@@ -348,10 +345,10 @@ const App: React.FC = () => {
                addSystemLog(`[${name}] 开始阅读 (${currentProgress}/${max})`, 'info', 'Scheduler');
                let loop = 0;
                while (currentProgress < max && loop < 35) { 
-                 // Pass ignoreRisk
                  const res = await Service.taskRead(currentAccessToken, config.proxyUrl, ignoreRisk);
                  if (res.success) {
                      currentProgress++; 
+                     // Update progress locally
                      updateAccountStatus(id, 'running', { stats: { ...dashboard.stats, readProgress: currentProgress } });
                      addLog(id, `阅读 ${currentProgress}/${max} 完成 | 积分 +1 (预估) | 等待下轮...`);
                  } else {
@@ -365,7 +362,6 @@ const App: React.FC = () => {
            }
       }
 
-      // Final Check (Pass ignoreRisk)
       const finalData = await Service.getDashboardData(currentAccessToken, config.proxyUrl, ignoreRisk);
       const earned = finalData.totalPoints - startPoints;
       addLog(id, `✅ 序列完成。本次收益: +${earned} 分`, "success");
@@ -406,11 +402,9 @@ const App: React.FC = () => {
     }
   };
 
-  // 生成单条账号的报告内容 (重构复用)
   const generateAccountReportBlock = (account: Account, result: { earned: number, totalPoints: number, status: string }, index: number) => {
       const statusStr = result.status === 'success' ? '✅ 执行成功' : result.status === 'risk' ? '🚨 风险警报' : '❌ 执行失败';
       
-      // 计算较昨日变化 (Diff)
       let diff = 0;
       let hasHistory = false;
       if (account.pointHistory && account.pointHistory.length > 0) {
@@ -445,8 +439,6 @@ const App: React.FC = () => {
 
       const result = await processAccount(account);
       
-      // 单独运行时，根据全局配置决定是否推送
-      // 如果全局配置允许单任务推送 (config.allowSinglePush !== false)，并且 WxPusher 启用
       if (config.wxPusher?.enabled && config.allowSinglePush !== false) {
           const targets = config.wxPusher.targets.filter(t => 
              (t.filterAccounts.length === 0 || t.filterAccounts.includes(accountId)) && t.enabled !== false
@@ -489,11 +481,9 @@ ${reportBlock}
       }
   };
 
-  // 重构后的批量执行逻辑
   const handleRunAll = async (isAuto: boolean) => {
       if (isRunning) {
-          // 如果正在运行，点击按钮触发停止
-          if (!isAuto) { // 只有手动点击按钮才能停止
+          if (!isAuto) { 
               stopTaskRef.current = true;
               addSystemLog("⚠️ 正在尝试中断任务...", "warning", 'User');
           }
@@ -504,8 +494,6 @@ ${reportBlock}
       stopTaskRef.current = false;
       const source = isAuto ? 'Scheduler' : 'User';
       
-      // 筛选逻辑：排除禁用的账号和风险账号
-      // 新增：如果配置了跳过已完成，且今天已运行过，则跳过
       const isToday = (ts: number) => {
           if (!ts) return false;
           const date = new Date(ts);
@@ -518,7 +506,6 @@ ${reportBlock}
           if (a.status === 'risk') return false;
           
           if (config.skipDailyCompleted && a.lastRunTime && isToday(a.lastRunTime)) {
-              // 自动跳过今日已完成
               return false;
           }
           return true;
@@ -546,7 +533,6 @@ ${reportBlock}
               await delay(config.delayBetweenAccounts * 1000);
           }
           
-          // 执行任务但不推送 (获取结果)
           const result = await processAccount(acc);
           executionResults.push({ account: acc, result });
       }
@@ -554,28 +540,23 @@ ${reportBlock}
       setIsRunning(false);
       
       if (stopTaskRef.current) {
-          // 如果被停止，不发送汇总推送，或者发送部分汇总
           addSystemLog("任务队列未完全执行", "warning", source);
       } else {
           addSystemLog("批量任务执行完毕", "success", source);
       }
 
-      // === 批量执行完毕，统一推送 ===
       if (config.wxPusher?.enabled && executionResults.length > 0) {
-          // 获取所有启用的分发目标
           const validTargets = config.wxPusher.targets.filter(t => t.enabled !== false);
           
           if (validTargets.length > 0) {
               const nowStr = formatTime(Date.now());
               
-              // 为每个目标生成定制化报告 (因为不同目标可能订阅了不同账号)
               for (const target of validTargets) {
-                  // 筛选该目标关注的账号结果
                   const targetResults = executionResults.filter(item => 
                       target.filterAccounts.length === 0 || target.filterAccounts.includes(item.account.id)
                   );
 
-                  if (targetResults.length === 0) continue; // 该目标关注的账号没有在此次任务中执行
+                  if (targetResults.length === 0) continue;
 
                   let totalEarned = 0;
                   let successCount = 0;
@@ -588,7 +569,6 @@ ${reportBlock}
                       reportBody += generateAccountReportBlock(item.account, item.result, idx + 1) + "\n";
                   });
 
-                  // 计算该目标视角的总积分池 (只包含它关注的账号)
                   const pool = accounts
                       .filter(a => target.filterAccounts.length === 0 || target.filterAccounts.includes(a.id))
                       .reduce((sum, a) => sum + a.totalPoints, 0);
@@ -653,12 +633,17 @@ ${reportBody.trim()}
           
           if (!currentAccessToken) throw new Error("无有效 Token");
 
-          // Pass ignoreRisk to refresh
           const dashboard = await Service.getDashboardData(currentAccessToken, config.proxyUrl, acc.ignoreRisk);
           updateAccountStatus(id, 'idle', { 
               totalPoints: dashboard.totalPoints, 
               stats: dashboard.stats 
           });
+          
+          // 新增：日志反馈
+          if (dashboard.stats.redeemGoal) {
+              addLog(id, `🎯 追踪到目标: ${dashboard.stats.redeemGoal.title}`, 'success');
+          }
+
           recordPointHistory(id, dashboard.totalPoints);
           addLog(id, `状态刷新成功`, 'success');
 
@@ -684,9 +669,9 @@ ${reportBody.trim()}
           logs: [], 
           totalPoints: 0, 
           pointHistory: [], 
-          stats: { readProgress: 0, readMax: 30 }, 
+          stats: { readProgress: 0, readMax: 30, pcSearchProgress: 0, pcSearchMax: 0, mobileSearchProgress: 0, mobileSearchMax: 0 }, 
           enabled: true,
-          cronEnabled: true, // Init true
+          cronEnabled: true, 
           ignoreRisk: false 
       }; 
       setAccounts([...accounts, newAccount]); 
@@ -705,7 +690,6 @@ ${reportBody.trim()}
   
   const handleRemoveAccount = (id: string) => { const name = accounts.find(a => a.id === id)?.name; setAccounts(prev => prev.filter(acc => acc.id !== id)); if (monitorAccountId === id) setMonitorAccountId(null); addSystemLog(`删除账号: ${name}`, 'warning', 'System'); };
   
-  // 新的 Add Account Token 逻辑
   const handleAddCopyAuthLink = async () => {
       const scope = encodeURIComponent("service::prod.rewardsplatform.microsoft.com::MBI_SSL offline_access openid profile");
       const link = `https://login.live.com/oauth20_authorize.srf?client_id=0000000040170455&scope=${scope}&response_type=code&redirect_uri=https://login.live.com/oauth20_desktop.srf&prompt=login`;
@@ -743,7 +727,6 @@ ${reportBody.trim()}
   const handleAddTokenUpdateClick = async () => {
       if (addTokenStep === 0) {
           setAddTokenError('');
-          // 优先尝试原生 API
           if (navigator.clipboard && navigator.clipboard.readText) {
               try {
                   const text = await navigator.clipboard.readText();
@@ -753,8 +736,6 @@ ${reportBody.trim()}
                   console.warn("Clipboard API failed, falling back to trap", e);
               }
           }
-          
-          // 如果失败，打开 Paste Trap
           setShowAddPasteTrap(true);
           setAddPasteTrapError('');
 
@@ -793,12 +774,10 @@ ${reportBody.trim()}
   const handleDragEnter = (e: React.DragEvent, index: number) => { if (dragItem.current !== null && dragItem.current !== index) { const newAccounts = [...accounts]; const draggedItem = newAccounts[dragItem.current]; newAccounts.splice(dragItem.current, 1); newAccounts.splice(index, 0, draggedItem); setAccounts(newAccounts); dragItem.current = index; } };
   const handleDragEnd = () => { dragItem.current = null; dragOverItem.current = null; setIsDragging(false); };
   
-  // Use config.layoutGap and config.containerPadding for styles
   const getGridStyle = () => { 
       const cols = config.gridCols || 0; 
       const gap = config.layoutGap ? `${config.layoutGap * 0.25}rem` : '1.5rem';
       if (cols === 0) { 
-          // 关键修改: 减小最小宽度至 300px 以适应较小屏幕或高缩放比例
           return { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap }; 
       } 
       return { display: 'grid', gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gap }; 
@@ -808,7 +787,6 @@ ${reportBody.trim()}
   const handleOpenCronForAccount = (initialValue: string, callback: (val: string) => void) => { setCronGenTarget({ value: initialValue, callback }); setShowCronGenerator(true); };
   const handleApplyCronGen = (expr: string) => { if (cronGenTarget) { cronGenTarget.callback(expr); setCronGenTarget(null); } setShowCronGenerator(false); };
 
-  // 全局调度 Effect
   useEffect(() => {
       const checkTimer = setInterval(() => {
           const now = new Date();
@@ -822,7 +800,6 @@ ${reportBody.trim()}
           }
 
           accounts.forEach(acc => {
-              // 只有当账户启用，且独立定时器也启用时，才触发
               if (acc.enabled !== false && acc.cronEnabled !== false && acc.cronExpression) {
                   const accLastRun = acc.lastRunTime || 0;
                   if (checkCronMatch(acc.cronExpression, now)) {
@@ -840,12 +817,10 @@ ${reportBody.trim()}
     <div className="h-screen bg-slate-900 text-gray-100 font-sans flex flex-col overflow-hidden custom-scrollbar">
       {/* Header */}
       <div className="shrink-0 bg-slate-950 border-b border-gray-800 backdrop-blur-md bg-opacity-80 z-40">
-          {/* 关键修改: 调整内边距，使其在小屏幕上更紧凑 */}
           <div className="w-full px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
               {/* Left Content */}
               <div className="flex items-center gap-4">
                   <div className="w-10 h-10 rounded-lg bg-gradient-to-tr from-blue-600 to-purple-600 flex items-center justify-center font-bold text-xl text-white shadow-lg shadow-blue-900/50 shrink-0">M</div>
-                  {/* 调整标题显示策略，在极小屏幕隐藏 */}
                   <h1 className="text-xl font-bold tracking-wide text-gray-200 hidden lg:block truncate">MS Rewards 多账号助手 <span className="text-sm text-gray-500 font-normal ml-1">v3.9.1</span></h1>
                   {config.clockPosition !== 'right' && <ClockComponent />}
               </div>
@@ -978,7 +953,7 @@ ${reportBody.trim()}
                  </button>
               </div>
 
-              {/* 账号列表 - 传入 preciseCountdown */}
+              {/* 账号列表 */}
               <div style={getGridStyle()}>
                   {accounts.map((acc, index) => (
                     <div 
@@ -1004,7 +979,7 @@ ${reportBody.trim()}
                             onLog={(msg, type) => addSystemLog(msg, type, `Account:${acc.name}`)}
                             cardFontSizes={config.cardFontSizes}
                             disableAutoClose={showCronGenerator} 
-                            preciseCountdown={config.preciseCountdown} // New Prop
+                            preciseCountdown={config.preciseCountdown} 
                         />
                     </div>
                   ))}
@@ -1087,7 +1062,6 @@ ${reportBody.trim()}
           onClose={() => setMonitorAccountId(null)} 
           configLogDays={config.monitorLogDays}
       />
-      {/* ... Other modals ... */}
       <WebDAVModal isOpen={showWebDAV} onClose={() => setShowWebDAV(false)} config={config} accounts={accounts} onUpdateConfig={(key, val) => setConfig(prev => ({...prev, [key]: val}))} onImportAccounts={handleWebDAVImport} addSystemLog={addSystemLog} />
       <DataManageModal isOpen={showDataManage} onClose={() => setShowDataManage(false)} accounts={accounts} config={config} onImport={handleDataImport} addSystemLog={addSystemLog} />
       <GlobalSettingsModal isOpen={showGlobalSettings} onClose={() => setShowGlobalSettings(false)} config={config} onUpdateConfig={setConfig} />
