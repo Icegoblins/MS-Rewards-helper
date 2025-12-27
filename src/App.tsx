@@ -324,12 +324,17 @@ const App: React.FC = () => {
       }
   };
 
-  const processAccount = async (account: Account): Promise<{ earned: number; totalPoints: number; status: 'success'|'error'|'risk'; stats: AccountStats; webCheckInStreak: number }> => {
+  const processAccount = async (account: Account, specificTask?: 'sign' | 'read'): Promise<{ earned: number; totalPoints: number; status: 'success'|'error'|'risk'; stats: AccountStats; webCheckInStreak: number }> => {
     const { id, refreshToken, accessToken: initialAccessToken, tokenExpiresAt, name, ignoreRisk, lastRunTime } = account;
     
     updateAccountStatus(id, 'running', { lastRunTime: Date.now() });
-    addLog(id, "🚀 任务序列已启动...");
-    addSystemLog(`[${name}] 启动任务序列`, 'info', 'Scheduler');
+    
+    let startMsg = "🚀 任务序列已启动...";
+    if (specificTask === 'sign') startMsg = "🚀 仅执行: 每日签到";
+    if (specificTask === 'read') startMsg = "🚀 仅执行: 阅读任务";
+    addLog(id, startMsg);
+    
+    addSystemLog(`[${name}] 启动任务 ${specificTask ? `(${specificTask})` : '(All)'}`, 'info', 'Scheduler');
 
     try {
       let currentAccessToken = initialAccessToken;
@@ -367,11 +372,9 @@ const App: React.FC = () => {
       const isExecutedToday = lastRunTime && new Date(lastRunTime).toDateString() === new Date().toDateString();
       
       // 检查 Sapphire 签到是否已完成 (API 状态)
-      // 通常 checkInProgress > 0 或者 checkInProgress >= checkInMax 代表已签
       const isSapphirePreDone = (dashboard.stats.checkInProgress || 0) > 0;
 
       // 如果 Sapphire 已签，强制同步 Web 状态为完成，并处理 Streak
-      // (即使用户选择不运行 runSign，或者任务跳过，只要状态是 Done，Web 也应该算 Done)
       if (isSapphirePreDone) {
           // Sync UI state
           dashboard.stats.dailySetMax = 1;
@@ -388,7 +391,11 @@ const App: React.FC = () => {
           });
       }
 
-      if (config.runSign) {
+      // Determine tasks to run
+      const enableSign = specificTask === 'sign' || (!specificTask && config.runSign);
+      const enableRead = specificTask === 'read' || (!specificTask && config.runRead);
+
+      if (enableSign) {
           if (isSapphirePreDone) {
               addLog(id, "💎 Sapphire 签到任务已达标 (API Check)，跳过执行。", "info");
           } else {
@@ -403,7 +410,7 @@ const App: React.FC = () => {
                   dashboard.stats.checkInMax = Math.max(dashboard.stats.checkInMax || 1, 1);
                   dashboard.stats.checkInProgress = Math.max(dashboard.stats.checkInProgress || 1, 1);
                   
-                  if (!isExecutedToday) { // Prevent double count if pre-check failed but execution worked (rare)
+                  if (!isExecutedToday) { 
                       currentWebStreak += 1;
                       addLog(id, `📅 Web 签到记录更新: 连胜 ${currentWebStreak} 天`, 'info');
                   }
@@ -422,7 +429,7 @@ const App: React.FC = () => {
           }
       }
 
-      if (config.runRead) {
+      if (enableRead) {
            let currentProgress = dashboard.stats.readProgress;
            const max = dashboard.stats.readMax;
            if (currentProgress < max) {
@@ -544,7 +551,7 @@ const App: React.FC = () => {
 -----------------------`;
   };
 
-  const runSingleAccountAutomatically = async (accountId: string, isManual: boolean) => {
+  const runSingleAccountAutomatically = async (accountId: string, isManual: boolean, specificTask?: 'sign' | 'read') => {
       const account = accounts.find(a => a.id === accountId);
       if (!account) return;
       if (account.status === 'running') {
@@ -553,10 +560,10 @@ const App: React.FC = () => {
       }
       
       if (isManual) {
-          addSystemLog(`[Manual] 启动账号: ${account.name}`, 'info', 'User');
+          addSystemLog(`[Manual] 启动账号: ${account.name} ${specificTask ? `(${specificTask})` : ''}`, 'info', 'User');
       }
 
-      const result = await processAccount(account);
+      const result = await processAccount(account, specificTask);
       
       if (config.wxPusher?.enabled && config.allowSinglePush !== false) {
           const targets = config.wxPusher.targets.filter(t => 
@@ -1200,7 +1207,7 @@ ${reportBody.trim()}
                             onRemove={handleRemoveAccount} 
                             onOpenMonitor={(id) => setMonitorAccountId(id)} 
                             onRefresh={refreshSingleAccount} 
-                            onRunSingle={(id) => runSingleAccountAutomatically(id, true)}
+                            onRunSingle={(id, type) => runSingleAccountAutomatically(id, true, type)}
                             onEditAccount={handleEditAccount}
                             onEditModeChange={(isEditing) => handleEditModeChange(acc.id, isEditing)}
                             onOpenCronGenerator={handleOpenCronForAccount}
