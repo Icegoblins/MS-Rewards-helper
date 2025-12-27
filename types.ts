@@ -5,7 +5,7 @@ export interface Account {
   refreshToken: string; // 核心凭证
   accessToken?: string; // 运行时临时凭证
   tokenExpiresAt?: number; // AccessToken 过期时间戳
-  status: 'idle' | 'running' | 'success' | 'error' | 'waiting' | 'risk' | 'disabled'; // Added disabled
+  status: 'idle' | 'running' | 'refreshing' | 'success' | 'error' | 'waiting' | 'risk' | 'disabled'; // Added refreshing
   logs: LogEntry[];
   lastRunTime?: number;
   totalPoints: number; // 账号总积分
@@ -17,6 +17,7 @@ export interface Account {
   cronEnabled?: boolean; // 是否启用独立定时器 (New)
   cronExpression?: string; // 独立定时任务表达式
   ignoreRisk?: boolean; // 是否忽略风控警告强制执行 (New)
+  webCheckInStreak?: number; // Web 端签到连胜天数 (本地记录)
 }
 
 export interface RedeemGoal {
@@ -32,7 +33,19 @@ export interface AccountStats {
   pcSearchMax: number;          // PC 搜索上限
   mobileSearchProgress: number; // 移动端搜索进度
   mobileSearchMax: number;      // 移动端搜索上限
-  redeemGoal?: RedeemGoal;      // 兑换目标 (New)
+  checkInProgress?: number;     // 签到/打卡进度
+  checkInMax?: number;          // 签到/打卡上限
+  redeemGoal?: RedeemGoal;      // 兑换目标
+  
+  // 新增：Web Dashboard 聚合状态
+  dailySetProgress?: number;    // 每日活动完成数 (通常是 0-3)
+  dailySetMax?: number;         // 每日活动总数
+  morePromosProgress?: number;  // 更多活动完成数
+  morePromosMax?: number;       // 更多活动总数
+  
+  // 新增：每日活动 (Daily Activities / Global Offers)
+  dailyActivitiesProgress?: number;
+  dailyActivitiesMax?: number;
 }
 
 export interface PointHistoryItem {

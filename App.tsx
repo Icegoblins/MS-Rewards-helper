@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Account, AppConfig, LogEntry, SystemLog, WebDAVConfig } from './types';
+import { Account, AppConfig, LogEntry, SystemLog, WebDAVConfig, AccountStats } from './types';
 import { delay, getRandomUUID, checkCronMatch, getNextRunDate, formatTime, formatTimeWithMs, parseTokenInput, formatDuration } from './utils/helpers';
 import * as Service from './services/msRewardsService';
 import { sendNotification } from './services/wxPusher';
@@ -107,7 +107,8 @@ const App: React.FC = () => {
       enabled: acc.enabled !== false,
       cronEnabled: acc.cronEnabled !== false, // Preserve or Default true
       cronExpression: acc.cronExpression,
-      ignoreRisk: acc.ignoreRisk || false // Ensure flag is preserved
+      ignoreRisk: acc.ignoreRisk || false, // Ensure flag is preserved
+      webCheckInStreak: acc.webCheckInStreak || 0 // Init streak
     }));
   };
 
@@ -145,6 +146,13 @@ const App: React.FC = () => {
      };
   });
   
+  // 保持 accounts 的最新引用，供异步函数读取
+  const accountsRef = useRef(accounts);
+  useEffect(() => { accountsRef.current = accounts; }, [accounts]);
+
+  // 新增：记录是否已执行过预检刷新
+  const hasPerformedPreCheck = useRef(false);
+
   // 布局可见性配置
   const [visibleWidgets, setVisibleWidgets] = useState<{ [key: string]: boolean }>(() => safeJsonParse('ms_rewards_layout_widgets', {
       total_pool: true,
@@ -288,8 +296,41 @@ const App: React.FC = () => {
   const humanDelay = async (accountId: string) => { const ms = Math.floor(Math.random() * (config.maxDelay - config.minDelay + 1) + config.minDelay) * 1000; addLog(accountId, `等待随机延迟 ${ms/1000}秒...`); await delay(ms); };
   const recordPointHistory = (accountId: string, points: number) => { if (!points) return; setAccounts(prev => prev.map(acc => { if (acc.id === accountId) { const history = acc.pointHistory || []; const last = history[history.length - 1]; if (last && last.points === points) { const lastDate = new Date(last.date).toDateString(); const today = new Date().toDateString(); if (lastDate === today) { return acc; } } if (last && (Date.now() - new Date(last.date).getTime() < 60000)) { last.points = points; last.date = new Date().toISOString(); return { ...acc, pointHistory: [...history] }; } const newHistory = [...history, { date: new Date().toISOString(), points }]; if (newHistory.length > 200) newHistory.shift(); return { ...acc, pointHistory: newHistory }; } return acc; })); };
   
-  const processAccount = async (account: Account): Promise<{ earned: number; totalPoints: number; status: 'success'|'error'|'risk' }> => {
-    const { id, refreshToken, accessToken: initialAccessToken, tokenExpiresAt, name, ignoreRisk } = account;
+  // 执行自动本地备份
+  const performAutoBackup = async () => {
+      const now = new Date();
+      const pad = (n: number) => n.toString().padStart(2, '0');
+      const timeString = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}-${pad(now.getHours())}-${pad(now.getMinutes())}`;
+      const filename = `MS_Rewards_AutoBackup_${timeString}.json`;
+
+      const content = JSON.stringify({
+          accounts: accountsRef.current, // 使用最新的 accounts 状态
+          config, 
+          exportDate: now.toISOString(),
+          version: "2.8.0"
+      }, null, 2);
+
+      let proxyBase = config.proxyUrl.trim();
+      if (!proxyBase.startsWith('http')) proxyBase = `http://${proxyBase}`;
+      if (proxyBase.endsWith('/')) proxyBase = proxyBase.slice(0, -1);
+      
+      const backupPath = config.localBackup?.path || 'backups';
+      const baseUrl = `${proxyBase}/api/local/file?action=write&path=${encodeURIComponent(backupPath)}`;
+
+      try {
+          await fetch(baseUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ filename, content })
+          });
+          addSystemLog(`自动备份已保存: ${filename}`, 'success', 'Backup');
+      } catch (e: any) {
+          console.error("Auto Backup Failed", e);
+      }
+  };
+
+  const processAccount = async (account: Account): Promise<{ earned: number; totalPoints: number; status: 'success'|'error'|'risk'; stats: AccountStats; webCheckInStreak: number }> => {
+    const { id, refreshToken, accessToken: initialAccessToken, tokenExpiresAt, name, ignoreRisk, lastRunTime } = account;
     
     updateAccountStatus(id, 'running', { lastRunTime: Date.now() });
     addLog(id, "🚀 任务序列已启动...");
@@ -316,32 +357,81 @@ const App: React.FC = () => {
 
       const dashboard = await Service.getDashboardData(currentAccessToken, config.proxyUrl, ignoreRisk);
       const startPoints = dashboard.totalPoints;
+      
+      // Update initial stats
       updateAccountStatus(id, 'running', { totalPoints: startPoints, stats: dashboard.stats });
       
-      // 新增：如果发现目标，记录日志
       if (dashboard.stats.redeemGoal) {
           addLog(id, `🎯 追踪到目标: ${dashboard.stats.redeemGoal.title}`, 'success');
       }
 
       recordPointHistory(id, startPoints);
 
-      if (config.runSign) {
-          addLog(id, "正在执行每日签入...");
-          const res = await Service.taskSign(currentAccessToken, config.proxyUrl, ignoreRisk);
-          if (res.success) {
-              addLog(id, res.message, "success");
-              if (res.points > 0) addSystemLog(`[${name}] 签入成功 +${res.points}`, 'success', 'Scheduler');
-          } else {
-              addLog(id, res.message, "warning");
+      // Web Check-in Streak Logic
+      let currentWebStreak = account.webCheckInStreak || 0;
+      const isExecutedToday = lastRunTime && new Date(lastRunTime).toDateString() === new Date().toDateString();
+      
+      // 检查 Sapphire 签到是否已完成 (API 状态)
+      // 通常 checkInProgress > 0 或者 checkInProgress >= checkInMax 代表已签
+      const isSapphirePreDone = (dashboard.stats.checkInProgress || 0) > 0;
+
+      // 如果 Sapphire 已签，强制同步 Web 状态为完成，并处理 Streak
+      // (即使用户选择不运行 runSign，或者任务跳过，只要状态是 Done，Web 也应该算 Done)
+      if (isSapphirePreDone) {
+          // Sync UI state
+          dashboard.stats.dailySetMax = 1;
+          dashboard.stats.dailySetProgress = 1;
+          
+          if (!isExecutedToday) {
+              currentWebStreak += 1;
+              addLog(id, `📅 检测到 Sapphire 已签，Web 记录同步: 连胜 ${currentWebStreak} 天`, 'info');
           }
-          await humanDelay(id);
+          
+          updateAccountStatus(id, 'running', { 
+              stats: dashboard.stats,
+              webCheckInStreak: currentWebStreak
+          });
+      }
+
+      if (config.runSign) {
+          if (isSapphirePreDone) {
+              addLog(id, "💎 Sapphire 签到任务已达标 (API Check)，跳过执行。", "info");
+          } else {
+              addLog(id, "⏳ 正在执行 Sapphire 签到...");
+              const res = await Service.taskSign(currentAccessToken, config.proxyUrl, ignoreRisk);
+              if (res.success) {
+                  addLog(id, res.message, "success");
+                  
+                  // 更新状态
+                  dashboard.stats.dailySetMax = 1;
+                  dashboard.stats.dailySetProgress = 1;
+                  dashboard.stats.checkInMax = Math.max(dashboard.stats.checkInMax || 1, 1);
+                  dashboard.stats.checkInProgress = Math.max(dashboard.stats.checkInProgress || 1, 1);
+                  
+                  if (!isExecutedToday) { // Prevent double count if pre-check failed but execution worked (rare)
+                      currentWebStreak += 1;
+                      addLog(id, `📅 Web 签到记录更新: 连胜 ${currentWebStreak} 天`, 'info');
+                  }
+                  
+                  updateAccountStatus(id, 'running', { 
+                      stats: dashboard.stats,
+                      webCheckInStreak: currentWebStreak
+                  });
+                  addLog(id, "🖥️ 网页端签到 (状态已同步)", "success");
+                  
+                  if (res.points > 0) addSystemLog(`[${name}] 签入成功 +${res.points}`, 'success', 'Scheduler');
+              } else {
+                  addLog(id, res.message, "warning");
+              }
+              await humanDelay(id);
+          }
       }
 
       if (config.runRead) {
            let currentProgress = dashboard.stats.readProgress;
            const max = dashboard.stats.readMax;
            if (currentProgress < max) {
-               addLog(id, `启动阅读任务序列 (${currentProgress}/${max})...`);
+               addLog(id, `📖 启动阅读任务序列 (${currentProgress}/${max})...`);
                addSystemLog(`[${name}] 开始阅读 (${currentProgress}/${max})`, 'info', 'Scheduler');
                let loop = 0;
                while (currentProgress < max && loop < 35) { 
@@ -365,10 +455,21 @@ const App: React.FC = () => {
       const finalData = await Service.getDashboardData(currentAccessToken, config.proxyUrl, ignoreRisk);
       const earned = finalData.totalPoints - startPoints;
       addLog(id, `✅ 序列完成。本次收益: +${earned} 分`, "success");
-      updateAccountStatus(id, 'success', { totalPoints: finalData.totalPoints, stats: finalData.stats, lastRunTime: Date.now() }); 
+      
+      // Update Final State (including persistent streak)
+      updateAccountStatus(id, 'success', { 
+          totalPoints: finalData.totalPoints, 
+          stats: finalData.stats, 
+          lastRunTime: Date.now(),
+          webCheckInStreak: currentWebStreak 
+      }); 
+      
       recordPointHistory(id, finalData.totalPoints);
       addSystemLog(`[${name}] 执行完成 | 收益: +${earned} | 总分: ${finalData.totalPoints}`, 'success', 'Scheduler');
       
+      // 触发自动备份
+      performAutoBackup();
+
       if (config.autoIdleDelay && config.autoIdleDelay > 0) {
           setTimeout(() => {
               setAccounts(currentAccounts => currentAccounts.map(a => {
@@ -381,7 +482,7 @@ const App: React.FC = () => {
           }, config.autoIdleDelay * 60 * 1000);
       }
 
-      return { earned, totalPoints: finalData.totalPoints, status: 'success' };
+      return { earned, totalPoints: finalData.totalPoints, status: 'success', stats: finalData.stats, webCheckInStreak: currentWebStreak };
 
     } catch (error: any) {
       const msg = error.message.toLowerCase();
@@ -398,11 +499,11 @@ const App: React.FC = () => {
           addLog(id, `❌ 执行中断: ${error.message}`, "error"); 
           addSystemLog(`[${name}] ❌ 执行中断: ${error.message}`, 'error', 'Scheduler');
       }
-      return { earned: 0, totalPoints: account.totalPoints, status };
+      return { earned: 0, totalPoints: account.totalPoints, status, stats: account.stats, webCheckInStreak: account.webCheckInStreak || 0 };
     }
   };
 
-  const generateAccountReportBlock = (account: Account, result: { earned: number, totalPoints: number, status: string }, index: number) => {
+  const generateAccountReportBlock = (account: Account, result: { earned: number, totalPoints: number, status: string, stats?: AccountStats, webCheckInStreak?: number }, index: number) => {
       const statusStr = result.status === 'success' ? '✅ 执行成功' : result.status === 'risk' ? '🚨 风险警报' : '❌ 执行失败';
       
       let diff = 0;
@@ -416,12 +517,35 @@ const App: React.FC = () => {
           }
       }
       const diffStr = hasHistory ? (diff >= 0 ? `+${diff}` : `${diff}`) : '+0';
+      const earnedStr = result.earned >= 0 ? `+${result.earned}` : `${result.earned}`;
 
+      const s = result.stats || account.stats;
+      const currentStreak = result.webCheckInStreak !== undefined ? result.webCheckInStreak : (account.webCheckInStreak || 0);
+
+      const readStatus = `${s.readProgress}/${s.readMax}`;
+      const pcStatus = `${s.pcSearchProgress}/${s.pcSearchMax}`;
+      const mobileStatus = `${s.mobileSearchProgress}/${s.mobileSearchMax}`;
+      const activityStatus = `${s.dailyActivitiesProgress || 0}/${s.dailyActivitiesMax || 0}`;
+      
+      const sapphireDays = s.checkInProgress || 0;
+      const sapphireStr = sapphireDays > 0 ? `已签 ${sapphireDays} 天` : "未签到";
+      
+      let webDays = currentStreak;
+      if (webDays === 0 && (sapphireDays > 0 || (s.dailySetProgress || 0) > 0)) {
+          webDays = 1;
+      }
+      const webCheckInStr = webDays > 0 ? `已签 ${webDays} 天` : "未签到";
+
+      // 格式调整：
+      // 积分: (本轮:+xx | 较昨日:+xx)
+      // 其他: 取消括号，用 | 分割
       return `[${index}] ${account.name}
-● 运行状态: ${statusStr}
-● 当前积分: ${result.totalPoints.toLocaleString()}
-● 本轮收益: +${result.earned}
-● 较昨变化: ${diffStr}
+● 状态: ${statusStr}
+● 积分: ${result.totalPoints.toLocaleString()} (本轮:${earnedStr} | 较昨日:${diffStr})
+● 阅读: ${readStatus}
+● 搜索: 电脑 ${pcStatus} | 移动 ${mobileStatus}
+● 活动: ${activityStatus}
+● 签到: APP ${sapphireStr} | Web ${webCheckInStr}
 -----------------------`;
   };
 
@@ -445,7 +569,8 @@ const App: React.FC = () => {
           );
 
           if (targets.length > 0) {
-              const reportBlock = generateAccountReportBlock(account, result, 1);
+              const tempAccount = { ...account, ...result };
+              const reportBlock = generateAccountReportBlock(tempAccount, result, 1);
               const content = `
 \`\`\`text
 M S   R E W A R D S
@@ -461,16 +586,16 @@ ${reportBlock}
               
               for (const target of targets) {
                   try {
-                      const pushRes = await sendNotification({
+                      const res = await sendNotification({
                           enabled: true,
                           appToken: config.wxPusher.appToken,
                           uids: target.uids
                       }, content, config.proxyUrl);
                       
-                      if (pushRes.success) {
+                      if (res.success) {
                           addSystemLog(`[${account.name}] 消息已推送至: ${target.name}`, 'success', 'Push');
                       } else {
-                          addSystemLog(`[${account.name}] 推送失败 (${target.name}): ${pushRes.msg}`, 'error', 'Push');
+                          addSystemLog(`[${account.name}] 推送失败 (${target.name}): ${res.msg}`, 'error', 'Push');
                       }
                   } catch (e: any) {
                       console.error("Push failed", e);
@@ -479,6 +604,64 @@ ${reportBlock}
               }
           }
       }
+  };
+
+  // 独立的一键刷新功能 (返回更新后的 Accounts Map)
+  const handleRefreshAll = async (isInternalCall: boolean = false): Promise<Map<string, Account>> => {
+      const source = isInternalCall ? 'Scheduler' : 'User';
+      if (!isInternalCall) {
+          if (isRunning) {
+              addSystemLog("⚠️ 任务正在运行，请勿重复操作", "warning", source);
+              return new Map();
+          }
+          setIsRunning(true);
+      }
+
+      const targets = accountsRef.current.filter(a => a.enabled !== false);
+      addSystemLog(`🔄 开始批量刷新状态 (${targets.length} 个账号)...`, 'info', source);
+      
+      const refreshedMap = new Map<string, Account>();
+
+      // 为了尽快刷新，使用 Promise.all 并发 (每次 3 个)
+      const chunkSize = 3;
+      for (let i = 0; i < targets.length; i += chunkSize) {
+          const chunk = targets.slice(i, i + chunkSize);
+          await Promise.all(chunk.map(async (acc) => {
+              try {
+                  // 仅获取 Dashboard 数据，不执行任务
+                  let currentToken = acc.accessToken;
+                  if (!acc.tokenExpiresAt || Date.now() > acc.tokenExpiresAt - TOKEN_REFRESH_THRESHOLD) {
+                      const t = await Service.renewToken(acc.refreshToken, config.proxyUrl);
+                      currentToken = t.accessToken;
+                      // Update to 'refreshing' status instead of 'running'
+                      updateAccountStatus(acc.id, 'refreshing', { accessToken: t.accessToken, refreshToken: t.newRefreshToken, tokenExpiresAt: Date.now() + t.expiresIn * 1000 });
+                  } else {
+                      updateAccountStatus(acc.id, 'refreshing');
+                  }
+                  
+                  const d = await Service.getDashboardData(currentToken!, config.proxyUrl, acc.ignoreRisk);
+                  
+                  updateAccountStatus(acc.id, 'idle', { totalPoints: d.totalPoints, stats: d.stats });
+                  
+                  // 构建更新后的对象放入 Map
+                  refreshedMap.set(acc.id, { ...acc, totalPoints: d.totalPoints, stats: d.stats, accessToken: currentToken });
+              } catch (e: any) {
+                  updateAccountStatus(acc.id, 'error');
+                  addLog(acc.id, `刷新失败: ${e.message}`, 'error');
+                  refreshedMap.set(acc.id, acc); // 失败则保留原样
+              }
+          }));
+          if (i + chunkSize < targets.length) await delay(1000);
+      }
+
+      addSystemLog(`✅ 批量刷新完成`, 'success', source);
+      
+      // 更新全局预检标记，表明状态已是最新
+      hasPerformedPreCheck.current = true;
+      
+      if (!isInternalCall) setIsRunning(false);
+      
+      return refreshedMap;
   };
 
   const handleRunAll = async (isAuto: boolean) => {
@@ -501,18 +684,44 @@ ${reportBlock}
           return date.getDate() === now.getDate() && date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
       };
 
-      const targets = accounts.filter(a => {
+      // Phase 1: 预检/刷新逻辑
+      let refreshedAccountsMap = new Map<string, Account>();
+      
+      if (!hasPerformedPreCheck.current) {
+          // 仅在未执行过预检时运行
+          addSystemLog("🚀 一键启动: 正在首次预检账号状态...", 'info', source);
+          refreshedAccountsMap = await handleRefreshAll(true);
+      } else {
+          addSystemLog("🚀 一键启动: 状态已就绪，跳过预检，直接执行...", 'info', source);
+          // 如果跳过预检，直接基于当前 accountsRef 构建 map
+          accountsRef.current.forEach(a => refreshedAccountsMap.set(a.id, a));
+      }
+
+      // Phase 2: 筛选并执行
+      // 使用 refreshedAccountsMap 中的最新数据来判断是否跳过
+      const targets = accountsRef.current.filter(a => {
           if (a.enabled === false) return false;
-          if (a.status === 'risk') return false;
+          if (a.status === 'risk') return false; // 风控账号不自动跑
           
-          if (config.skipDailyCompleted && a.lastRunTime && isToday(a.lastRunTime)) {
-              return false;
+          // 获取该账号的最新状态 (如果刷新失败则用旧的)
+          const freshAcc = refreshedAccountsMap.get(a.id) || a;
+
+          if (config.skipDailyCompleted) {
+              const s = freshAcc.stats;
+              // 判定逻辑：阅读满 + Sapphire满 (或无) + Web满 (或无)
+              const isReadDone = s.readProgress >= s.readMax;
+              const isSapphireDone = (s.checkInMax || 0) === 0 || (s.checkInProgress || 0) > 0;
+              const isWebDone = (s.dailySetMax || 0) === 0 || (s.dailySetProgress || 0) >= (s.dailySetMax || 1);
+              
+              if (isReadDone && isSapphireDone && isWebDone) {
+                  return false; // 跳过
+              }
           }
           return true;
       });
 
       if (targets.length === 0) {
-          const msg = config.skipDailyCompleted ? "所有启用账号今日均已签到 (或无待执行账号)" : "没有待执行的有效账号";
+          const msg = config.skipDailyCompleted ? "所有启用账号均已完成任务 (智能跳过)" : "没有待执行的有效账号";
           addSystemLog(msg, "warning", source);
           setIsRunning(false);
           return;
@@ -520,7 +729,7 @@ ${reportBlock}
 
       addSystemLog(`开始批量执行 (${targets.length} 个账号)`, 'info', source);
 
-      const executionResults: { account: Account, result: { earned: number, totalPoints: number, status: string } }[] = [];
+      const executionResults: { account: Account, result: { earned: number, totalPoints: number, status: string, stats?: AccountStats, webCheckInStreak?: number } }[] = [];
 
       for (let i = 0; i < targets.length; i++) {
           if (stopTaskRef.current) {
@@ -534,7 +743,15 @@ ${reportBlock}
           }
           
           const result = await processAccount(acc);
-          executionResults.push({ account: acc, result });
+          
+          const updatedAcc = { 
+              ...acc, 
+              totalPoints: result.totalPoints, 
+              stats: result.stats || acc.stats, 
+              webCheckInStreak: result.webCheckInStreak !== undefined ? result.webCheckInStreak : acc.webCheckInStreak 
+          };
+          
+          executionResults.push({ account: updatedAcc, result });
       }
 
       setIsRunning(false);
@@ -562,16 +779,16 @@ ${reportBlock}
                   let successCount = 0;
                   let failCount = 0;
                   let reportBody = "";
+                  
+                  // 积分池计算：仅统计本次推送包含的账号的总积分
+                  let currentPushPool = 0;
 
                   targetResults.forEach((item, idx) => {
                       totalEarned += item.result.earned;
+                      currentPushPool += item.result.totalPoints; // 使用最新执行结果的积分
                       if (item.result.status === 'success') successCount++; else failCount++;
                       reportBody += generateAccountReportBlock(item.account, item.result, idx + 1) + "\n";
                   });
-
-                  const pool = accounts
-                      .filter(a => target.filterAccounts.length === 0 || target.filterAccounts.includes(a.id))
-                      .reduce((sum, a) => sum + a.totalPoints, 0);
 
                   const summaryContent = `
 \`\`\`text
@@ -585,20 +802,26 @@ ${reportBody.trim()}
 📊 统计
 成功: ${successCount}   失败: ${failCount}
 💰 总收益: +${totalEarned}
-🏆 关注池: ${pool.toLocaleString()}
+🏆 积分池: ${currentPushPool.toLocaleString()}
 =======================
 \`\`\`
                   `.trim();
 
                   try {
-                      await sendNotification({
+                      const res = await sendNotification({
                           enabled: true,
                           appToken: config.wxPusher.appToken,
                           uids: target.uids
                       }, summaryContent, config.proxyUrl);
-                      addSystemLog(`汇总报告已推送到: ${target.name}`, 'success', 'Push');
+                      
+                      if (res.success) {
+                          addSystemLog(`汇总报告已推送到: ${target.name}`, 'success', 'Push');
+                      } else {
+                          addSystemLog(`汇总推送失败 (${target.name}): ${res.msg}`, 'error', 'Push');
+                      }
                   } catch (e: any) {
                       console.error("Batch Push failed", e);
+                      addSystemLog(`批量推送异常: ${e.message}`, 'error', 'Push');
                   }
               }
           }
@@ -607,9 +830,10 @@ ${reportBody.trim()}
 
   const refreshSingleAccount = async (id: string) => {
       const acc = accounts.find(a => a.id === id);
-      if(!acc || acc.status === 'running') return;
+      if(!acc || acc.status === 'running' || acc.status === 'refreshing') return;
       
-      updateAccountStatus(id, 'running');
+      // Update to 'refreshing' status
+      updateAccountStatus(id, 'refreshing');
       addLog(id, "正在刷新状态...");
       
       try {
@@ -620,7 +844,7 @@ ${reportBody.trim()}
               try {
                 const tokenData = await Service.renewToken(acc.refreshToken, config.proxyUrl);
                 currentAccessToken = tokenData.accessToken;
-                updateAccountStatus(id, 'running', {
+                updateAccountStatus(id, 'refreshing', {
                     accessToken: tokenData.accessToken,
                     refreshToken: tokenData.newRefreshToken,
                     tokenExpiresAt: Date.now() + (tokenData.expiresIn * 1000)
@@ -639,7 +863,6 @@ ${reportBody.trim()}
               stats: dashboard.stats 
           });
           
-          // 新增：日志反馈
           if (dashboard.stats.redeemGoal) {
               addLog(id, `🎯 追踪到目标: ${dashboard.stats.redeemGoal.title}`, 'success');
           }
@@ -672,7 +895,8 @@ ${reportBody.trim()}
           stats: { readProgress: 0, readMax: 30, pcSearchProgress: 0, pcSearchMax: 0, mobileSearchProgress: 0, mobileSearchMax: 0 }, 
           enabled: true,
           cronEnabled: true, 
-          ignoreRisk: false 
+          ignoreRisk: false,
+          webCheckInStreak: 0
       }; 
       setAccounts([...accounts, newAccount]); 
       
@@ -893,6 +1117,17 @@ ${reportBody.trim()}
               {/* Right Content */}
               <div className="flex items-center gap-3 shrink-0">
                  {config.clockPosition === 'right' && <ClockComponent />}
+                 <button
+                    onClick={() => handleRefreshAll(false)}
+                    disabled={isRunning || accounts.length === 0}
+                    className={`px-3 sm:px-4 py-2.5 rounded-full font-bold text-sm transition-all shadow-lg active:scale-95 whitespace-nowrap border border-cyan-700 ${
+                        isRunning
+                        ? 'bg-gray-800 text-gray-500 cursor-not-allowed'
+                        : 'bg-cyan-900/50 hover:bg-cyan-800/80 text-cyan-200 hover:text-white shadow-cyan-900/20'
+                    }`}
+                 >
+                    🔄 一键刷新
+                 </button>
                  <button 
                     onClick={() => handleRunAll(false)} 
                     disabled={accounts.length === 0} 

@@ -2,7 +2,7 @@
 import { AccountStats } from '../types';
 import { fetchWithProxy, checkRisk, CN_HEADERS } from './request';
 
-// 辅助函数：安全获取属性（忽略大小写，支持深度查找）
+// 辅助函数：安全获取属性（忽略大小写）
 const getAttr = (obj: any, key: string): any => {
     if (!obj || typeof obj !== 'object') return undefined;
     const lowerKey = key.toLowerCase();
@@ -12,13 +12,12 @@ const getAttr = (obj: any, key: string): any => {
     return undefined;
 };
 
-// 获取极简数据 (只关心总分和阅读进度)
+// 获取 dashboard 数据 (包含积分、任务状态等)
 export const getDashboardData = async (accessToken: string, proxyUrl: string, ignoreRisk: boolean = false): Promise<{ 
     totalPoints: number, 
     stats: AccountStats 
 }> => {
   try {
-    // 移除 options=613，获取全量 Dashboard 数据，确保包含 redeemGoal
     const response = await fetchWithProxy("https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&country=cn&market=zh-CN", { 
         method: "GET", 
         headers: { "content-type": "application/x-www-form-urlencoded; charset=UTF-8", "authorization": `Bearer ${accessToken}`, ...CN_HEADERS } 
@@ -37,7 +36,8 @@ export const getDashboardData = async (accessToken: string, proxyUrl: string, ig
         }
     }
     
-    const appResponse = appDataRaw?.response || {};
+    // 兼容性处理
+    const appResponse = appDataRaw?.response || appDataRaw || {};
     const totalPoints = appResponse.balance ?? 0;
 
     let stats: AccountStats = {
@@ -47,76 +47,128 @@ export const getDashboardData = async (accessToken: string, proxyUrl: string, ig
         pcSearchMax: 0,
         mobileSearchProgress: 0,
         mobileSearchMax: 0,
-        redeemGoal: undefined
+        checkInProgress: 0,
+        checkInMax: 0,
+        redeemGoal: undefined,
+        dailySetProgress: 0,
+        dailySetMax: 0,
+        morePromosProgress: 0, 
+        morePromosMax: 0,
+        dailyActivitiesProgress: 0, // 新增
+        dailyActivitiesMax: 0 // 新增
     };
 
-    // Debug Log: 帮助用户排查数据 (折叠显示)
     console.groupCollapsed(`📊 Dashboard Data Debug [${new Date().toLocaleTimeString()}]`);
-    console.log("Raw Response Keys:", Object.keys(appResponse)); // 打印根节点所有 Key
-
-    // --- 增强的目标提取逻辑 ---
-    // 1. 尝试直接获取 (新增 goal_item)
-    let rawGoal = getAttr(appResponse, 'redeemGoal') || getAttr(appResponse, 'redeem_goal') || getAttr(appResponse, 'goal') || getAttr(appResponse, 'goal_item');
     
-    // 2. 如果没找到，尝试在 userStatus 中查找 (某些旧版接口结构)
+    // --- 目标提取逻辑 ---
+    let rawGoal = appResponse['goal_item'] || appResponse['redeemGoal'] || getAttr(appResponse, 'goal_item');
     if (!rawGoal) {
-        const userStatus = getAttr(appResponse, 'userStatus');
+        const autoItem = appResponse['autoRedeemItem'] || getAttr(appResponse, 'autoRedeemItem');
+        if (autoItem) {
+            console.log("🕵️‍♂️ Found autoRedeemItem, using as goal candidate.");
+            rawGoal = autoItem;
+        }
+    }
+    if (!rawGoal) {
+        const profile = appResponse['profile'] || getAttr(appResponse, 'profile');
+        if (profile) {
+             const userStatus = getAttr(profile, 'userStatus') || getAttr(profile, 'user_status');
+             if (userStatus) {
+                 rawGoal = getAttr(userStatus, 'goal_item') || getAttr(userStatus, 'redeemGoal');
+             }
+        }
+    }
+    if (!rawGoal) {
+        const userStatus = getAttr(appResponse, 'userStatus') || getAttr(appResponse, 'user_status');
         if (userStatus) {
-            console.log("Searching in userStatus...");
-            rawGoal = getAttr(userStatus, 'redeemGoal') || getAttr(userStatus, 'redeem_goal') || getAttr(userStatus, 'goal_item');
+            rawGoal = getAttr(userStatus, 'goal_item') || getAttr(userStatus, 'redeemGoal');
         }
     }
 
     if (rawGoal) {
-        // 打印 goal 对象的内容，方便确认内部结构
-        console.log("👉 Raw Goal Object Found:", rawGoal);
+        const title = getAttr(rawGoal, 'title') || getAttr(rawGoal, 'name') || getAttr(rawGoal, 'description') || getAttr(rawGoal, 'display_name');
+        const priceRaw = getAttr(rawGoal, 'price') || getAttr(rawGoal, 'points') || getAttr(rawGoal, 'amount') || getAttr(rawGoal, 'promotionPrice') || getAttr(rawGoal, 'value');
+        const imageUrl = getAttr(rawGoal, 'imageUrl') || getAttr(rawGoal, 'image_url') || getAttr(rawGoal, 'image') || getAttr(rawGoal, 'blobImage');
 
-        // 提取内部字段，同样使用 getAttr 忽略大小写
-        const title = getAttr(rawGoal, 'title');
-        const price = getAttr(rawGoal, 'price');
-        const imageUrl = getAttr(rawGoal, 'imageUrl') || getAttr(rawGoal, 'image_url') || getAttr(rawGoal, 'image');
+        let finalPrice = 0;
+        if (priceRaw) {
+            if (typeof priceRaw === 'string') {
+                finalPrice = Number(priceRaw.replace(/[^0-9]/g, ''));
+            } else {
+                finalPrice = Number(priceRaw);
+            }
+        }
 
-        if (title && price) {
+        if (title) {
             stats.redeemGoal = {
                 title: String(title),
-                price: Number(price),
+                price: finalPrice || 0,
                 imageUrl: imageUrl
             };
-            console.log(`✅ [Goal Found] Title: ${stats.redeemGoal.title}, Price: ${stats.redeemGoal.price}`);
-        } else {
-            console.warn("⚠️ [Goal Warning] Found goal object but missing title/price keys.");
+            console.log(`✅ [Goal Extracted] ${stats.redeemGoal.title}`);
         }
-    } else {
-        console.warn("❌ [Goal Missing] Could not find 'redeemGoal' or 'goal_item' object in API response.");
+    } 
+
+    // --- 任务进度提取 ---
+    const dashboard = appResponse.dashboard || appResponse; 
+    
+    // A. 每日活动 (Daily Set) - 保留逻辑，用于状态条展示
+    const dailySetPromotions = dashboard.dailySetPromotions || {};
+    const now = new Date();
+    const month = (now.getMonth() + 1).toString().padStart(2, '0');
+    const day = now.getDate().toString().padStart(2, '0');
+    const year = now.getFullYear();
+    
+    const keysToTry = [
+        `${month}/${day}/${year}`,
+        `${now.getMonth() + 1}/${now.getDate()}/${year}`
+    ];
+    
+    let dailyTasks: any[] = [];
+    for (const k of keysToTry) {
+        if (dailySetPromotions[k]) {
+            dailyTasks = dailySetPromotions[k];
+            break;
+        }
+    }
+    
+    if (dailyTasks && Array.isArray(dailyTasks) && dailyTasks.length > 0) {
+        stats.dailySetMax = dailyTasks.length;
+        stats.dailySetProgress = dailyTasks.filter((t: any) => t.complete === true).length;
+        console.log(`📅 Daily Set (Web): ${stats.dailySetProgress}/${stats.dailySetMax}`);
     }
 
-    const pro = appResponse.promotions;
+    // B. 移动端任务列表 (promotions)
+    const pro = appResponse.promotions || [];
     
     if (pro && Array.isArray(pro)) {
       for (const o of pro) {
         const attributes = o.attributes || {};
-        
-        // 兼容不同大小写的 key
         const offerId = (getAttr(attributes, 'offerid') || "").toLowerCase();
         const contentClass = (getAttr(attributes, 'contentclass') || "").toLowerCase();
         const title = (getAttr(attributes, 'title') || "").toLowerCase();
         
-        // 尝试获取进度和最大值
+        // 积分值提取
         const progress = Number(getAttr(attributes, 'progress') || 0);
         const max = Number(getAttr(attributes, 'max') || 0);
 
-        // 打印每个 Promotion 的关键信息，方便调试
-        if (max > 0) { // 只打印有分数的任务
-            console.log(`[Task] ${title} (${offerId}): ${progress}/${max}`);
+        if (max > 0) {
+             console.log(`[Task] ${title} (${offerId}): ${progress}/${max}`);
         }
 
-        // 1. 阅读任务
-        if (offerId === "enus_readarticle3_30points" || title.includes("read to earn")) {
+        // 1. 阅读
+        const isReadTask = 
+            offerId === "enus_readarticle3_30points" || 
+            title.includes("read to earn") || 
+            title.includes("read and you shall be rewarded") ||
+            title.includes("阅读");
+
+        if (isReadTask) {
           stats.readMax = max > 0 ? max : 30;
           stats.readProgress = progress;
         }
 
-        // 2. PC 搜索任务
+        // 2. PC 搜索
         const isPCSearch = 
             contentClass.includes("pc_search") || 
             offerId.includes("pcsearch") ||
@@ -131,7 +183,7 @@ export const getDashboardData = async (accessToken: string, proxyUrl: string, ig
              }
         }
         
-        // 3. 移动端搜索任务
+        // 3. 移动搜索
         const isMobileSearch = 
             contentClass.includes("mobile_search") || 
             offerId.includes("mobilesearch") || 
@@ -146,9 +198,36 @@ export const getDashboardData = async (accessToken: string, proxyUrl: string, ig
                  stats.mobileSearchProgress = progress;
              }
         }
+
+        // 4. Sapphire 每日签到
+        const isPuzzle = offerId.includes("puzzle") || title.includes("puzzle") || title.includes("拼图");
+        const isRealCheckIn = 
+            (offerId.includes("dailycheckin") && !isPuzzle) || 
+            (title.includes("daily check-in") && !isPuzzle) ||
+            offerId.includes("gamification_sapphire_dailycheckin"); 
+        
+        if (isRealCheckIn) {
+            stats.checkInMax = max;
+            stats.checkInProgress = progress;
+            console.log(`✅ Identified Sapphire Check-in: ${offerId}`);
+        }
+
+        // 5. 每日活动 (Daily Activities / Global Offers)
+        // 特征: zhstar_rewards_dailyglobaloffer_evergreen_...
+        const isDailyActivity = 
+            offerId.includes("dailyglobaloffer") ||
+            offerId.includes("daily_activity") ||
+            title.includes("每日活动") ||
+            title.includes("daily set");
+        
+        if (isDailyActivity && !isPCSearch && !isMobileSearch && !isReadTask && !isRealCheckIn) {
+            if (max > 0) {
+                // 累加多个每日活动的积分
+                stats.dailyActivitiesMax = (stats.dailyActivitiesMax || 0) + max;
+                stats.dailyActivitiesProgress = (stats.dailyActivitiesProgress || 0) + progress;
+            }
+        }
       }
-    } else {
-        console.warn("No promotions array found in API response");
     }
     console.groupEnd();
 

@@ -5,7 +5,36 @@ import { fetchWithProxy, checkRisk, CN_HEADERS } from './request';
 // 签入任务模块
 export const taskSign = async (accessToken: string, proxyUrl: string, ignoreRisk: boolean = false): Promise<{ success: boolean; points: number; message: string }> => {
    try {
-    const response = await fetchWithProxy("https://prod.rewardsplatform.microsoft.com/dapi/me/activities", { method: "POST", headers: { "content-type": "application/json; charset=UTF-8", "authorization": `Bearer ${accessToken}`, ...CN_HEADERS }, body: JSON.stringify({ "amount": 1, "attributes": {}, "id": getRandomUUID(), "type": 103, "country": "cn", "risk_context": {}, "channel": "SAAndroid" }) }, proxyUrl);
+    // 构造日期数字 (YYYYMMDD)
+    const now = new Date();
+    const dateNum = parseInt(`${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}`);
+
+    // 参考 Python 脚本的 Payload
+    const payload = {
+        "amount": 1,
+        "attributes": {
+            "offerid": "Gamification_Sapphire_DailyCheckIn",
+            "date": dateNum,
+            "signIn": false,
+            "timezoneOffset": "08:00:00" // 假定东八区
+        },
+        "id": getRandomUUID(),
+        "type": 101, // Python 脚本使用 101
+        "country": "cn",
+        "risk_context": {},
+        "channel": "SAAndroid"
+    };
+
+    const response = await fetchWithProxy("https://prod.rewardsplatform.microsoft.com/dapi/me/activities", { 
+        method: "POST", 
+        headers: { 
+            "content-type": "application/json; charset=UTF-8", 
+            "authorization": `Bearer ${accessToken}`, 
+            ...CN_HEADERS 
+        }, 
+        body: JSON.stringify(payload) 
+    }, proxyUrl);
+    
     const data = await response.json();
     
     const riskMsg = checkRisk(data, response.status); 
@@ -17,16 +46,22 @@ export const taskSign = async (accessToken: string, proxyUrl: string, ignoreRisk
         }
     }
     
-    if (data.error) return { success: false, points: 0, message: `签入错误: ${data.message || data.code}` };
+    if (data.error) {
+        // 检查是否重复签到
+        const errDesc = data.error.description || data.message || '';
+        if (errDesc.toLowerCase().includes('already') || errDesc.toLowerCase().includes('duplicate')) {
+            return { success: true, points: 0, message: "移动端签到已完成 (Sapphire Check-in Done)" };
+        }
+        return { success: false, points: 0, message: `签入错误: ${data.message || data.code}` };
+    }
     
     let earned = 0;
     if (data?.response?.activity?.p) earned = Number(data.response.activity.p);
     
-    const status = data?.response?.activity?.status;
-    if (earned > 0) return { success: true, points: earned, message: `签入成功 +${earned}` };
-    if (status === "Complete") return { success: true, points: 0, message: "重复签入 (Complete)" };
+    // 如果没有返回积分但也没有报错，可能是之前签过了
+    if (earned > 0) return { success: true, points: earned, message: `💎 Sapphire 签到成功 +${earned}` };
     
-    return { success: true, points: 0, message: "签入操作完成" };
+    return { success: true, points: 0, message: "签入操作完成 (无积分变动)" };
   } catch (error: any) { throw error; }
 };
 
