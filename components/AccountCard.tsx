@@ -1,8 +1,8 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Account, LogEntry, AppConfig } from '../types';
 import ToggleSwitch from './ToggleSwitch';
-import { getNextRunDate, formatShortDate, parseTokenInput, formatDuration } from '../utils/helpers';
+import { getNextRunDate, formatShortDate, parseTokenInput } from '../utils/helpers';
 import * as Service from '../services/msRewardsService';
 import PasteTrapModal from './PasteTrapModal';
 import CountdownTimer from './CountdownTimer';
@@ -18,7 +18,7 @@ interface AccountCardProps {
   onOpenCronGenerator: (initialValue: string, callback: (val: string) => void) => void; 
   autoCloseDelay?: number; 
   proxyUrl: string; 
-  onLog?: (msg: string, type: LogEntry['type']) => void;
+  onLog: (msg: string, type: LogEntry['type'], source?: string) => void; // 接收通用 log 函数
   cardFontSizes?: AppConfig['cardFontSizes']; 
   disableAutoClose?: boolean; 
   preciseCountdown?: boolean; 
@@ -36,10 +36,6 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
   const [latestLog, setLatestLog] = useState('');
   const [isHovered, setIsHovered] = useState(false);
   
-  // 优化：不再在组件状态中维护 countdown，避免每秒重渲染
-  // 只在配置变更时计算一次 nextRunObj 用于 Tooltip 显示
-  const [nextRunObj, setNextRunObj] = useState<Date | null>(null);
-
   const [tokenUpdateStep, setTokenUpdateStep] = useState<0 | 1>(0);
   const [authFeedback, setAuthFeedback] = useState('');
   const [tokenFeedback, setTokenFeedback] = useState('');
@@ -54,6 +50,13 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
 
   const fontTotal = cardFontSizes?.totalPoints || 'text-3xl';
   const fontChange = cardFontSizes?.dailyChange || 'text-2xl';
+
+  // 1. 稳定的 Log 处理函数
+  // 即使父组件传入的 onLog 改变引用 (虽然父组件已经 useCallback，但防万一)，
+  // 我们这里也可以再做一层保护，或者直接使用。
+  const handleLog = useCallback((msg: string, type: LogEntry['type'] = 'info') => {
+      onLog(msg, type, `Account:${account.name}`);
+  }, [onLog, account.name]);
 
   const resetAutoCloseTimer = () => {
       if (autoCloseTimer.current) clearTimeout(autoCloseTimer.current);
@@ -111,13 +114,13 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
       }
   }, [account, isEditMode]);
 
-  // 仅在依赖变化时重新计算下次运行时间 (静态)
-  useEffect(() => {
+  // 优化计算 Next Run Date，只在悬停时或配置改变时计算
+  // 使用 useMemo 而不是 state 避免不必要的 effect 触发
+  const nextRunObj = useMemo(() => {
       if (!account.cronExpression || account.enabled === false || account.cronEnabled === false) {
-          setNextRunObj(null);
-          return;
+          return null;
       }
-      setNextRunObj(getNextRunDate(account.cronExpression));
+      return getNextRunDate(account.cronExpression);
   }, [account.cronExpression, account.enabled, account.cronEnabled]);
 
   const handleSaveEdit = () => {
@@ -191,12 +194,12 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
               }
               setEditToken(finalRefreshToken);
               onEditAccount(account.id, { refreshToken: finalRefreshToken });
-              onLog?.(`Token 手动更新成功`, 'success');
+              handleLog(`Token 手动更新成功`, 'success');
               setTokenFeedback('凭证已更新');
               setTimeout(() => setTokenFeedback(''), 2000);
           } catch (e: any) {
               setTokenError(`❌ 更新失败: ${e.message}`);
-              onLog?.(`Token 更新失败: ${e.message}`, 'error');
+              handleLog(`Token 更新失败: ${e.message}`, 'error');
           } finally {
               setTokenUpdateStep(0);
               pendingTokenRef.current = null;
@@ -260,7 +263,7 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
       alwaysShow?: boolean;
   }
 
-  const EnergyBar = ({ current, max, label, type = 'default', customText, forceFull = false, alwaysShow = false }: EnergyBarProps) => {
+  const EnergyBar = React.memo(({ current, max, label, type = 'default', customText, forceFull = false, alwaysShow = false }: EnergyBarProps) => {
       if (max <= 0 && !forceFull && !alwaysShow) return null;
       
       const safeMax = max > 0 ? max : 1;
@@ -333,7 +336,7 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
             </div>
         </div>
       );
-  };
+  });
 
   const tokenStatus = getTokenStatus();
   const isAccountEnabled = account.enabled !== false;
@@ -480,7 +483,6 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
                    {account.cronExpression && isAccountEnabled && isCronEnabled && (
                        <div className="relative group/timer ml-1 pl-2 border-l border-gray-600 flex items-center gap-1 cursor-help">
                            <span className="text-xs text-purple-400">⏰</span>
-                           {/* 替换为 CountdownTimer，并传入精确模式配置 */}
                            <CountdownTimer 
                                cron={account.cronExpression} 
                                enabled={true} 
@@ -649,4 +651,5 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
   );
 };
 
+// 使用 React.memo 包装，仅在 props 真正变化时重渲染
 export default React.memo(AccountCard);

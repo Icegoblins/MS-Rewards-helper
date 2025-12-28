@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Account, AppConfig, LogEntry, SystemLog, WebDAVConfig } from './types';
 import { delay, getRandomUUID, checkCronMatch, formatTime, parseTokenInput } from './utils/helpers';
 import * as Service from './services/msRewardsService';
@@ -73,28 +73,41 @@ const FEATURE_COLORS = {
     push: { base: 'emerald', border: 'border-emerald-500', bg: 'bg-emerald-900/30', text: 'text-emerald-300', dot: 'bg-emerald-500' }
 };
 
-// 独立时钟组件，避免导致主 App 重渲染
+// 独立时钟组件 - 使用 requestAnimationFrame 优化性能
 const HeaderClock = React.memo(() => {
-    const [systemTime, setSystemTime] = useState(new Date());
-    
+    const [timeStr, setTimeStr] = useState('');
+    const [msStr, setMsStr] = useState('000');
+    const requestRef = useRef<number | null>(null);
+
+    const animate = () => {
+        const now = new Date();
+        setTimeStr(now.toLocaleTimeString('en-US', {hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'}));
+        setMsStr(now.getMilliseconds().toString().padStart(3, '0'));
+        requestRef.current = requestAnimationFrame(animate);
+    };
+
     useEffect(() => {
-        // 恢复到 50ms 以显示流畅的3位毫秒 (50ms = 20fps，足够人眼流畅感)
-        const timer = setInterval(() => setSystemTime(new Date()), 50); 
-        return () => clearInterval(timer);
+        requestRef.current = requestAnimationFrame(animate);
+        return () => {
+            if (requestRef.current) cancelAnimationFrame(requestRef.current);
+        };
     }, []);
+
+    // 只有在 hydration 完成后才渲染内容
+    if (!timeStr) return null;
 
     return (
         <div className="hidden lg:flex items-center ml-4 px-4 py-2 bg-black rounded-lg border border-gray-800 shadow-[0_0_20px_-5px_rgba(6,182,212,0.2)] font-mono gap-3 select-none group hover:border-cyan-500/50 transition-colors">
             <div className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shadow-[0_0_8px_#22d3ee]"></span>
                 <span className="text-xl font-bold text-gray-100 tracking-widest text-shadow-glow">
-                    {systemTime.toLocaleTimeString('en-US', {hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'})}
+                    {timeStr}
                 </span>
             </div>
             <div className="flex flex-col justify-center border-l border-gray-700 pl-3 h-8">
                 <span className="text-[10px] text-gray-500 font-bold uppercase leading-none mb-0.5">MS</span>
                 <span className="text-sm text-cyan-500 font-bold leading-none w-9 tabular-nums">
-                    {systemTime.getMilliseconds().toString().padStart(3, '0')}
+                    {msStr}
                 </span>
             </div>
         </div>
@@ -260,7 +273,8 @@ const App: React.FC = () => {
       return <span className={`w-2 h-2 rounded-full ${indicatorColor} ${shadowClass}`}></span>;
   };
 
-  const addLog = (accountId: string, message: string, type: LogEntry['type'] = 'info') => {
+  // 使用 useCallback 确保引用稳定，防止子组件无谓重绘
+  const addLog = useCallback((accountId: string, message: string, type: LogEntry['type'] = 'info') => {
     setAccounts(prev => prev.map(acc => { 
         if (acc.id === accountId) { 
             const newLog = { id: getRandomUUID(), timestamp: Date.now(), type, message };
@@ -268,10 +282,14 @@ const App: React.FC = () => {
         } 
         return acc; 
     }));
-  };
+  }, []);
   
   const updateAccountStatus = (accountId: string, status: Account['status'], updates?: Partial<Account>) => { setAccounts(prev => prev.map(acc => { if (acc.id === accountId) return { ...acc, status, ...updates }; return acc; })); };
-  const handleEditAccount = (id: string, updates: Partial<Account>) => { setAccounts(prev => prev.map(acc => { if (acc.id === id) return { ...acc, ...updates }; return acc; })); };
+  
+  const handleEditAccount = useCallback((id: string, updates: Partial<Account>) => { 
+      setAccounts(prev => prev.map(acc => { if (acc.id === id) return { ...acc, ...updates }; return acc; })); 
+  }, []);
+
   const humanDelay = async (accountId: string) => { const ms = Math.floor(Math.random() * (config.maxDelay - config.minDelay + 1) + config.minDelay) * 1000; addLog(accountId, `等待随机延迟 ${ms/1000}秒...`); await delay(ms); };
   const recordPointHistory = (accountId: string, points: number) => { if (!points) return; setAccounts(prev => prev.map(acc => { if (acc.id === accountId) { const history = acc.pointHistory || []; const last = history[history.length - 1]; if (last && last.points === points) { const lastDate = new Date(last.date).toDateString(); const today = new Date().toDateString(); if (lastDate === today) { return acc; } } if (last && (Date.now() - new Date(last.date).getTime() < 60000)) { last.points = points; last.date = new Date().toISOString(); return { ...acc, pointHistory: [...history] }; } const newHistory = [...history, { date: new Date().toISOString(), points }]; if (newHistory.length > 200) newHistory.shift(); return { ...acc, pointHistory: newHistory }; } return acc; })); };
   
@@ -299,9 +317,6 @@ const App: React.FC = () => {
   };
 
   const processAccount = async (account: Account, mode: ExecutionMode = 'all'): Promise<{ earned: number; totalPoints: number; status: 'success'|'error'|'risk' }> => {
-    // ... (保持原有的 processAccount 逻辑不变，代码太长省略，实际渲染时包含完整逻辑)
-    // 为了节省篇幅，这里假定 processAccount 逻辑与之前一致，仅在 App 组件结构上做优化
-    // 实际执行时，请保留原始的 processAccount 完整代码
     const { id, refreshToken, accessToken: initialAccessToken, tokenExpiresAt, name, ignoreRisk } = account;
     
     updateAccountStatus(id, 'running', { lastRunTime: Date.now() });
@@ -446,8 +461,10 @@ const App: React.FC = () => {
 -----------------------`;
   };
 
+  // 稳定引用：单账号运行
+  // 即使依赖变化，useCallback 也能减少不必要的生成，但这里主要是给 AccountCard 传 inline function 的问题
+  // 见下文 AccountCard 修改
   const runSingleAccountAutomatically = async (accountId: string, isManual: boolean) => {
-      // (保持原有逻辑)
       const account = accounts.find(a => a.id === accountId);
       if (!account) return;
       if (account.status === 'running') {
@@ -496,6 +513,55 @@ ${reportBlock}
           }
       }
   };
+
+  // 稳定引用：刷新单个账号
+  const refreshSingleAccount = useCallback(async (id: string, logToSystem: boolean = true) => {
+      const acc = accounts.find(a => a.id === id);
+      if(!acc || acc.status === 'running') return;
+      
+      updateAccountStatus(id, 'refreshing'); 
+      if (logToSystem) addLog(id, "正在刷新状态...");
+      
+      try {
+          let currentAccessToken = acc.accessToken;
+          const now = Date.now();
+          
+          if (!acc.tokenExpiresAt || now > acc.tokenExpiresAt - TOKEN_REFRESH_THRESHOLD) {
+              try {
+                const tokenData = await Service.renewToken(acc.refreshToken, config.proxyUrl);
+                currentAccessToken = tokenData.accessToken;
+                updateAccountStatus(id, 'refreshing', { 
+                    accessToken: tokenData.accessToken,
+                    refreshToken: tokenData.newRefreshToken,
+                    tokenExpiresAt: Date.now() + (tokenData.expiresIn * 1000)
+                });
+              } catch (e: any) {
+                  addLog(id, `Token 刷新失败: ${e.message}`, 'warning');
+                  throw e;
+              }
+          }
+          
+          if (!currentAccessToken) throw new Error("无有效 Token");
+
+          const dashboard = await Service.getDashboardData(currentAccessToken, config.proxyUrl, acc.ignoreRisk);
+          updateAccountStatus(id, 'idle', { 
+              totalPoints: dashboard.totalPoints, 
+              stats: dashboard.stats 
+          });
+          recordPointHistory(id, dashboard.totalPoints);
+          if (logToSystem) addLog(id, `状态刷新成功`, 'success');
+
+      } catch (e: any) {
+          const msg = e.message.toLowerCase();
+          if (msg.includes("risk") || msg.includes("suspended")) {
+              updateAccountStatus(id, 'risk');
+              if (logToSystem) addLog(id, `🚨 刷新检测到风控: ${e.message}`, 'risk');
+          } else {
+              updateAccountStatus(id, 'error');
+              if (logToSystem) addLog(id, `刷新失败: ${e.message}`, 'error');
+          }
+      }
+  }, [accounts, config.proxyUrl, addLog]);
 
   const handleRefreshAll = async (manual: boolean = true) => {
       if (isRefreshingAll || isRunning) return;
@@ -627,54 +693,6 @@ ${reportBody.trim()}
       }
   };
 
-  const refreshSingleAccount = async (id: string, logToSystem: boolean = true) => {
-      const acc = accounts.find(a => a.id === id);
-      if(!acc || acc.status === 'running') return;
-      
-      updateAccountStatus(id, 'refreshing'); 
-      if (logToSystem) addLog(id, "正在刷新状态...");
-      
-      try {
-          let currentAccessToken = acc.accessToken;
-          const now = Date.now();
-          
-          if (!acc.tokenExpiresAt || now > acc.tokenExpiresAt - TOKEN_REFRESH_THRESHOLD) {
-              try {
-                const tokenData = await Service.renewToken(acc.refreshToken, config.proxyUrl);
-                currentAccessToken = tokenData.accessToken;
-                updateAccountStatus(id, 'refreshing', { 
-                    accessToken: tokenData.accessToken,
-                    refreshToken: tokenData.newRefreshToken,
-                    tokenExpiresAt: Date.now() + (tokenData.expiresIn * 1000)
-                });
-              } catch (e: any) {
-                  addLog(id, `Token 刷新失败: ${e.message}`, 'warning');
-                  throw e;
-              }
-          }
-          
-          if (!currentAccessToken) throw new Error("无有效 Token");
-
-          const dashboard = await Service.getDashboardData(currentAccessToken, config.proxyUrl, acc.ignoreRisk);
-          updateAccountStatus(id, 'idle', { 
-              totalPoints: dashboard.totalPoints, 
-              stats: dashboard.stats 
-          });
-          recordPointHistory(id, dashboard.totalPoints);
-          if (logToSystem) addLog(id, `状态刷新成功`, 'success');
-
-      } catch (e: any) {
-          const msg = e.message.toLowerCase();
-          if (msg.includes("risk") || msg.includes("suspended")) {
-              updateAccountStatus(id, 'risk');
-              if (logToSystem) addLog(id, `🚨 刷新检测到风控: ${e.message}`, 'risk');
-          } else {
-              updateAccountStatus(id, 'error');
-              if (logToSystem) addLog(id, `刷新失败: ${e.message}`, 'error');
-          }
-      }
-  };
-
   const handleDataImport = (newAccounts: Account[], newConfig: AppConfig | null, mode: 'merge' | 'overwrite', importedSystemLogs?: SystemLog[]) => { setAccounts(sanitizeAccounts(newAccounts)); if(newConfig) setConfig(c => ({...c, ...newConfig})); };
   const handleWebDAVImport = (newAccounts: Account[], newConfig?: AppConfig, importedSystemLogs?: SystemLog[]) => { handleDataImport(newAccounts, newConfig || null, 'overwrite', importedSystemLogs); };
   
@@ -701,7 +719,12 @@ ${reportBody.trim()}
       addSystemLog(`添加新账号: ${newAccount.name}`, 'success', 'System'); 
   };
   
-  const handleRemoveAccount = (id: string) => { const name = accounts.find(a => a.id === id)?.name; setAccounts(prev => prev.filter(acc => acc.id !== id)); if (monitorAccountId === id) setMonitorAccountId(null); addSystemLog(`删除账号: ${name}`, 'warning', 'System'); };
+  const handleRemoveAccount = useCallback((id: string) => { 
+      const name = accounts.find(a => a.id === id)?.name; 
+      setAccounts(prev => prev.filter(acc => acc.id !== id)); 
+      if (monitorAccountId === id) setMonitorAccountId(null); 
+      addSystemLog(`删除账号: ${name}`, 'warning', 'System'); 
+  }, [accounts, monitorAccountId, addSystemLog]);
   
   // Token logic ... (omitted similar helper functions for brevity, keep existing logic)
   const handleAddCopyAuthLink = async () => { /* ... existing ... */ 
@@ -731,8 +754,14 @@ ${reportBody.trim()}
       return { display: 'grid', gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gap }; 
   };
   
-  const handleEditModeChange = (id: string, isEditing: boolean) => { setEditingAccountIds(prev => isEditing ? [...prev, id] : prev.filter(eid => eid !== id)); };
-  const handleOpenCronForAccount = (initialValue: string, callback: (val: string) => void) => { setCronGenTarget({ value: initialValue, callback }); setShowCronGenerator(true); };
+  const handleEditModeChange = useCallback((id: string, isEditing: boolean) => { 
+      setEditingAccountIds(prev => isEditing ? [...prev, id] : prev.filter(eid => eid !== id)); 
+  }, []);
+  
+  const handleOpenCronForAccount = useCallback((initialValue: string, callback: (val: string) => void) => { 
+      setCronGenTarget({ value: initialValue, callback }); setShowCronGenerator(true); 
+  }, []);
+  
   const handleApplyCronGen = (expr: string) => { if (cronGenTarget) { cronGenTarget.callback(expr); setCronGenTarget(null); } setShowCronGenerator(false); };
 
   useEffect(() => {
@@ -944,7 +973,7 @@ ${reportBody.trim()}
                             onOpenCronGenerator={handleOpenCronForAccount}
                             autoCloseDelay={config.editModeAutoCloseDelay}
                             proxyUrl={config.proxyUrl} 
-                            onLog={(msg, type) => addSystemLog(msg, type, `Account:${acc.name}`)}
+                            onLog={addSystemLog} // 传递稳定引用，在 Card 内部柯里化
                             cardFontSizes={config.cardFontSizes}
                             disableAutoClose={showCronGenerator} 
                             preciseCountdown={config.preciseCountdown} 
