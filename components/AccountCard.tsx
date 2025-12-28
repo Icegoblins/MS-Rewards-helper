@@ -11,7 +11,7 @@ interface AccountCardProps {
   onRemove: (id: string) => void;
   onOpenMonitor: (id: string) => void;
   onRefresh: (id: string) => void; 
-  onRunSingle: (id: string, type?: 'sign' | 'read') => void; 
+  onRunSingle: (id: string) => void; 
   onEditAccount: (id: string, updates: Partial<Account>) => void;
   onEditModeChange?: (isEditing: boolean) => void;
   onOpenCronGenerator: (initialValue: string, callback: (val: string) => void) => void; 
@@ -23,7 +23,7 @@ interface AccountCardProps {
   preciseCountdown?: boolean; 
 }
 
-const AccountCard: React.FC<AccountCardProps> = React.memo(({ account, onRemove, onOpenMonitor, onRefresh, onRunSingle, onEditAccount, onEditModeChange, onOpenCronGenerator, autoCloseDelay = 30, proxyUrl, onLog, cardFontSizes, disableAutoClose = false, preciseCountdown = false }) => {
+const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMonitor, onRefresh, onRunSingle, onEditAccount, onEditModeChange, onOpenCronGenerator, autoCloseDelay = 30, proxyUrl, onLog, cardFontSizes, disableAutoClose = false, preciseCountdown = false }) => {
   const [isEditMode, setIsEditMode] = useState(false);
   const [editName, setEditName] = useState(account.name);
   const [editToken, setEditToken] = useState(account.refreshToken);
@@ -34,9 +34,6 @@ const AccountCard: React.FC<AccountCardProps> = React.memo(({ account, onRemove,
   
   const [latestLog, setLatestLog] = useState('');
   const [isHovered, setIsHovered] = useState(false);
-  
-  // Run Button Menu State
-  const [showRunMenu, setShowRunMenu] = useState(false);
   
   const [countdown, setCountdown] = useState<string>('');
   const [nextRunObj, setNextRunObj] = useState<Date | null>(null);
@@ -113,6 +110,7 @@ const AccountCard: React.FC<AccountCardProps> = React.memo(({ account, onRemove,
   }, [account, isEditMode]);
 
   useEffect(() => {
+      // 检查全局启用状态 和 独立定时器启用状态
       if (!account.cronExpression || account.enabled === false || account.cronEnabled === false) {
           setCountdown('');
           setNextRunObj(null);
@@ -142,7 +140,7 @@ const AccountCard: React.FC<AccountCardProps> = React.memo(({ account, onRemove,
           setCountdown(formatDuration(diff, preciseCountdown));
       };
 
-      updateCountdown(); 
+      updateCountdown(); // 立即执行一次
       const timer = setInterval(updateCountdown, 1000);
       return () => clearInterval(timer);
   }, [account.cronExpression, account.enabled, account.cronEnabled, preciseCountdown]); 
@@ -234,10 +232,10 @@ const AccountCard: React.FC<AccountCardProps> = React.memo(({ account, onRemove,
   const getStatusStyle = (status: Account['status'], isEnabled: boolean) => {
     if (!isEnabled) return 'border-gray-700 bg-gray-900/50 opacity-60 grayscale'; 
     switch (status) {
-      case 'running': 
-          return 'border-blue-500 bg-gray-800/95 shadow-[0_0_20px_-5px_rgba(59,130,246,0.6)] relative after:absolute after:inset-0 after:bg-gradient-to-tr after:from-blue-500/10 after:to-purple-500/10 after:animate-pulse after:-z-10 after:rounded-2xl ring-1 ring-blue-400/30';
-      case 'refreshing':
-          return 'border-cyan-500 bg-gray-800/95 shadow-[0_0_20px_-5px_rgba(6,182,212,0.6)] relative after:absolute after:inset-0 after:bg-gradient-to-tr after:from-cyan-500/10 after:to-blue-500/10 after:animate-pulse after:-z-10 after:rounded-2xl ring-1 ring-cyan-400/30';
+      // 任务执行中 - 恢复经典脉冲效果，并将紫色替换为科技青
+      case 'running': return 'border-blue-500 bg-gray-800/95 shadow-[0_0_20px_-5px_rgba(59,130,246,0.6)] relative after:absolute after:inset-0 after:bg-gradient-to-tr after:from-blue-500/10 after:to-cyan-500/10 after:animate-pulse after:-z-10 after:rounded-2xl ring-1 ring-blue-400/30';
+      // 刷新中 - 青色呼吸边框
+      case 'refreshing': return 'border-cyan-500/50 bg-gray-800/80 shadow-[0_0_15px_rgba(6,182,212,0.15)] animate-pulse ring-1 ring-cyan-400/20';
       case 'success': return 'border-emerald-500 bg-gray-800 shadow-none'; 
       case 'error': return 'border-rose-500 bg-gray-800 shadow-none';
       case 'risk': return 'border-red-600 bg-red-900/20 shadow-none';
@@ -248,8 +246,9 @@ const AccountCard: React.FC<AccountCardProps> = React.memo(({ account, onRemove,
 
   const getStatusIcon = () => {
       if (account.enabled === false) return <div className="w-2 h-2 rounded-full bg-gray-600" />;
-      if (account.status === 'running') return <div className="w-2 h-2 rounded-full bg-blue-400 animate-ping" />;
-      if (account.status === 'refreshing') return <div className="w-2 h-2 rounded-full bg-cyan-400 animate-spin" style={{borderRadius: '20%'}} />;
+      // 运行中图标：使用纯蓝色呼吸灯，配合蓝色边框
+      if (account.status === 'running') return <div className="w-2 h-2 rounded-full bg-blue-400 animate-ping opacity-90 shadow-[0_0_8px_#3b82f6]" />;
+      if (account.status === 'refreshing') return <div className="w-2 h-2 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin" />;
       if (account.status === 'success') return <div className="w-2 h-2 rounded-full bg-emerald-400" />;
       if (account.status === 'error') return <div className="w-2 h-2 rounded-full bg-rose-500" />;
       if (account.status === 'risk') return <div className="w-2 h-2 rounded-full bg-red-600 animate-pulse" />;
@@ -259,8 +258,8 @@ const AccountCard: React.FC<AccountCardProps> = React.memo(({ account, onRemove,
   const getStatusText = () => {
       if (!account.enabled) return '已停用';
       switch (account.status) {
-          case 'running': return '运行中';
-          case 'refreshing': return '刷新中';
+          case 'running': return '执行中...';
+          case 'refreshing': return '刷新中...';
           case 'success': return '已完成';
           case 'risk': return '风控中';
           case 'waiting': return '等待中';
@@ -300,11 +299,11 @@ const AccountCard: React.FC<AccountCardProps> = React.memo(({ account, onRemove,
 
       switch (type) {
           case 'pc':
-               barColor = 'bg-[#0067B8]';
+               barColor = 'bg-[#0067B8]'; // Microsoft Blue
                textColor = 'text-blue-400'; 
                break;
           case 'mobile':
-               barColor = 'bg-[#037FB0]';
+               barColor = 'bg-[#037FB0]'; // Cyan-ish Blue
                textColor = 'text-cyan-400'; 
                break;
           case 'checkin':
@@ -377,15 +376,15 @@ const AccountCard: React.FC<AccountCardProps> = React.memo(({ account, onRemove,
 
   let webText = "待更新";
   if (hasData) {
-      if (sapphireDays > 0) {
-          webText = `🔥 已签 ${account.webCheckInStreak || 1} 天`;
+      if (account.webCheckInStreak && account.webCheckInStreak > 0) {
+          webText = `🔥 已签 ${account.webCheckInStreak} 天`;
       } else {
           webText = "未签到";
       }
   }
 
   const sapphireForceFull = isSuccessToday || sapphireDays > 0;
-  const webForceFull = hasData && sapphireDays > 0;
+  const webForceFull = hasData && (account.webCheckInStreak || 0) > 0;
 
   return (
     <>
@@ -535,33 +534,13 @@ const AccountCard: React.FC<AccountCardProps> = React.memo(({ account, onRemove,
            </div>
         </div>
 
-        {/* Settings Buttons - Update position to prevent overflow issues */}
-        <div className={`absolute top-2 right-2 z-20 flex gap-2 transition-opacity duration-200 ${isHovered || account.status === 'running' || account.status === 'refreshing' || showRunMenu ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
-            <div className="relative" onMouseEnter={() => setShowRunMenu(true)} onMouseLeave={() => setShowRunMenu(false)}>
-                <button onClick={(e) => { e.stopPropagation(); onRunSingle(account.id); }} className="p-2.5 rounded-lg text-gray-400 bg-gray-800/90 hover:text-green-400 hover:bg-gray-700 border border-gray-600 hover:border-green-500/50 shadow-lg backdrop-blur" title="立即执行">
-                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                </button>
-                {/* Independent Task Menu */}
-                {showRunMenu && (
-                    <div className="absolute top-full right-0 mt-1 w-28 bg-gray-800/95 backdrop-blur border border-gray-600 rounded-lg shadow-xl z-50 flex flex-col py-1 animate-in fade-in slide-in-from-top-1 duration-150">
-                        <button 
-                            onClick={(e) => { e.stopPropagation(); onRunSingle(account.id, 'sign'); setShowRunMenu(false); }}
-                            className="px-3 py-2 text-left text-xs text-gray-300 hover:bg-blue-600 hover:text-white flex items-center gap-2"
-                        >
-                            <span>📅</span> 仅签到
-                        </button>
-                        <button 
-                            onClick={(e) => { e.stopPropagation(); onRunSingle(account.id, 'read'); setShowRunMenu(false); }}
-                            className="px-3 py-2 text-left text-xs text-gray-300 hover:bg-blue-600 hover:text-white flex items-center gap-2"
-                        >
-                            <span>📖</span> 仅阅读
-                        </button>
-                    </div>
-                )}
-            </div>
-
+        {/* Settings Buttons */}
+        <div className={`absolute top-2 right-2 z-20 flex gap-2 transition-opacity duration-200 ${isHovered || account.status === 'running' || account.status === 'refreshing' ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+            <button onClick={(e) => { e.stopPropagation(); onRunSingle(account.id); }} className="p-2.5 rounded-lg text-gray-400 bg-gray-800/90 hover:text-green-400 hover:bg-gray-700 border border-gray-600 hover:border-green-500/50 shadow-lg backdrop-blur" title="立即执行">
+               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+            </button>
             <button onClick={(e) => { e.stopPropagation(); onRefresh(account.id); }} className="p-2.5 rounded-lg text-gray-400 bg-gray-800/90 hover:text-cyan-400 hover:bg-gray-700 border border-gray-600 hover:border-cyan-500/50 shadow-lg backdrop-blur" title="刷新状态">
-               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+               <svg className={`w-5 h-5 ${account.status === 'refreshing' ? 'animate-spin text-cyan-400' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
             </button>
             <button onClick={(e) => { e.stopPropagation(); onOpenMonitor(account.id); }} className="p-2.5 rounded-lg text-gray-400 bg-gray-800/90 hover:text-blue-400 hover:bg-gray-700 border border-gray-600 hover:border-blue-500/50 shadow-lg backdrop-blur" title="查看监控">
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 002 2h2a2 2 0 002-2z"></path></svg>
@@ -618,7 +597,6 @@ const AccountCard: React.FC<AccountCardProps> = React.memo(({ account, onRemove,
 
       <div className={`space-y-3 relative z-10 transition-opacity shrink-0 mb-6 ${!isAccountEnabled ? 'opacity-50' : ''}`}>
           
-          {/* 兑换目标展示 */}
           {account.stats.redeemGoal && (
              <div className="mb-4 bg-amber-900/10 border border-amber-800/30 rounded-xl p-3 flex flex-col gap-2">
                 <div className="flex justify-between items-center">
@@ -641,24 +619,21 @@ const AccountCard: React.FC<AccountCardProps> = React.memo(({ account, onRemove,
              </div>
           )}
 
-          {/* 阅读任务 (始终显示) */}
           <EnergyBar current={account.stats.readProgress} max={account.stats.readMax} label="阅读任务" type="default" />
           
-          {/* 搜索任务 & 每日活动 (三列显示，强制常驻) */}
           <div className="grid grid-cols-3 gap-2">
               <EnergyBar current={account.stats.pcSearchProgress} max={account.stats.pcSearchMax} label="电脑" type="pc" />
               <EnergyBar current={account.stats.mobileSearchProgress} max={account.stats.mobileSearchMax} label="移动" type="mobile" alwaysShow={true} />
               <EnergyBar current={account.stats.dailyActivitiesProgress || 0} max={account.stats.dailyActivitiesMax || 0} label="日常" type="activities" alwaysShow={true} />
           </div>
           
-          {/* 签到状态组合 (Sapphire & Web) - 始终显示 */}
           <div className="grid grid-cols-2 gap-3 mt-2 pt-2 border-t border-gray-800/50">
               <EnergyBar 
                   current={account.stats.checkInProgress || 0} 
                   max={Math.max(account.stats.checkInMax || 0, 1)} 
                   label="Sapphire 每日签到" 
                   type="checkin" 
-                  customText={sapphireText} // 新的文案逻辑
+                  customText={sapphireText} 
                   forceFull={sapphireForceFull} 
               />
               <EnergyBar 
@@ -666,7 +641,7 @@ const AccountCard: React.FC<AccountCardProps> = React.memo(({ account, onRemove,
                   max={Math.max(account.stats.dailySetMax || 0, 1)} 
                   label="Web 每日签到" 
                   type="daily" 
-                  customText={webText} // 新的文案逻辑
+                  customText={webText} 
                   forceFull={webForceFull} 
               />
           </div>
@@ -693,6 +668,6 @@ const AccountCard: React.FC<AccountCardProps> = React.memo(({ account, onRemove,
     />
     </>
   );
-});
+};
 
-export default AccountCard;
+export default React.memo(AccountCard);

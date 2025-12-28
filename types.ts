@@ -7,7 +7,8 @@ export interface Account {
   tokenExpiresAt?: number; // AccessToken 过期时间戳
   status: 'idle' | 'running' | 'refreshing' | 'success' | 'error' | 'waiting' | 'risk' | 'disabled'; // Added refreshing
   logs: LogEntry[];
-  lastRunTime?: number;
+  lastRunTime?: number; // 上次尝试运行的时间 (无论输赢)
+  lastDailySuccess?: number; // [新增] 上次每日任务*成功完成*的时间戳
   totalPoints: number; // 账号总积分
   stats: AccountStats;
   pointHistory: PointHistoryItem[]; // 积分历史记录
@@ -17,35 +18,37 @@ export interface Account {
   cronEnabled?: boolean; // 是否启用独立定时器 (New)
   cronExpression?: string; // 独立定时任务表达式
   ignoreRisk?: boolean; // 是否忽略风控警告强制执行 (New)
-  webCheckInStreak?: number; // Web 端签到连胜天数 (本地记录)
-}
-
-export interface RedeemGoal {
-  title: string;
-  price: number;
-  imageUrl?: string;
+  webCheckInStreak?: number; // Web端签到连胜天数
 }
 
 export interface AccountStats {
   readProgress: number;
   readMax: number;
-  pcSearchProgress: number;     // PC 搜索进度
-  pcSearchMax: number;          // PC 搜索上限
-  mobileSearchProgress: number; // 移动端搜索进度
-  mobileSearchMax: number;      // 移动端搜索上限
-  checkInProgress?: number;     // 签到/打卡进度
-  checkInMax?: number;          // 签到/打卡上限
-  redeemGoal?: RedeemGoal;      // 兑换目标
   
-  // 新增：Web Dashboard 聚合状态
-  dailySetProgress?: number;    // 每日活动完成数 (通常是 0-3)
-  dailySetMax?: number;         // 每日活动总数
-  morePromosProgress?: number;  // 更多活动完成数
-  morePromosMax?: number;       // 更多活动总数
+  // 搜索任务 (PC/Mobile)
+  pcSearchProgress: number;
+  pcSearchMax: number;
+  mobileSearchProgress: number;
+  mobileSearchMax: number;
   
-  // 新增：每日活动 (Daily Activities / Global Offers)
+  // App 签到 (Sapphire)
+  checkInProgress?: number;
+  checkInMax?: number;
+  
+  // Web 每日活动 (Daily Set)
+  dailySetProgress?: number;
+  dailySetMax?: number;
+  
+  // 更多活动 (More Activities)
   dailyActivitiesProgress?: number;
   dailyActivitiesMax?: number;
+  
+  // 兑换目标
+  redeemGoal?: {
+      title: string;
+      price: number;
+      progress: number;
+  };
 }
 
 export interface PointHistoryItem {
@@ -65,7 +68,7 @@ export interface SystemLog {
   id: string;
   timestamp: number;
   type: 'info' | 'success' | 'error' | 'warning' | 'risk';
-  source: 'System' | 'WebDAV' | 'Scheduler' | 'Backup' | string;
+  source: 'System' | 'WebDAV' | 'Scheduler' | 'Backup' | 'Push' | string;
   message: string;
 }
 
@@ -158,3 +161,4 @@ export interface AppConfig {
 }
 
 export const DEFAULT_UA_MOBILE = "Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36 EdgA/112.0.1722.59";
+export const DEFAULT_UA_PC = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36 Edg/112.0.1722.58";

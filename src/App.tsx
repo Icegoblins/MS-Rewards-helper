@@ -120,7 +120,7 @@ const App: React.FC = () => {
       refreshToken: acc.refreshToken || '',
       accessToken: acc.accessToken,
       tokenExpiresAt: acc.tokenExpiresAt,
-      // 修复：保留 Risk 状态，其他非持久状态 (包括 running, refreshing) 重置为 idle
+      // 修复：保留 Risk 状态，其他非持久状态重置为 idle
       status: acc.status === 'risk' ? 'risk' : 'idle', 
       logs: Array.isArray(acc.logs) ? acc.logs.slice(-50) : [], 
       lastRunTime: acc.lastRunTime,
@@ -669,7 +669,7 @@ ${reportBody.trim()}
       const acc = accounts.find(a => a.id === id);
       if(!acc || acc.status === 'running') return;
       
-      updateAccountStatus(id, 'refreshing'); // 设置为 refreshing 状态以触发不同特效
+      updateAccountStatus(id, 'running');
       if (logToSystem) addLog(id, "正在刷新状态...");
       
       try {
@@ -680,7 +680,7 @@ ${reportBody.trim()}
               try {
                 const tokenData = await Service.renewToken(acc.refreshToken, config.proxyUrl);
                 currentAccessToken = tokenData.accessToken;
-                updateAccountStatus(id, 'refreshing', { // 保持 refreshing
+                updateAccountStatus(id, 'running', {
                     accessToken: tokenData.accessToken,
                     refreshToken: tokenData.newRefreshToken,
                     tokenExpiresAt: Date.now() + (tokenData.expiresIn * 1000)
