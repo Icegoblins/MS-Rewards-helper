@@ -5,6 +5,7 @@ import ToggleSwitch from './ToggleSwitch';
 import { getNextRunDate, formatShortDate, parseTokenInput, formatDuration } from '../utils/helpers';
 import * as Service from '../services/msRewardsService';
 import PasteTrapModal from './PasteTrapModal';
+import CountdownTimer from './CountdownTimer';
 
 interface AccountCardProps {
   account: Account;
@@ -35,7 +36,8 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
   const [latestLog, setLatestLog] = useState('');
   const [isHovered, setIsHovered] = useState(false);
   
-  const [countdown, setCountdown] = useState<string>('');
+  // 优化：不再在组件状态中维护 countdown，避免每秒重渲染
+  // 只在配置变更时计算一次 nextRunObj 用于 Tooltip 显示
   const [nextRunObj, setNextRunObj] = useState<Date | null>(null);
 
   const [tokenUpdateStep, setTokenUpdateStep] = useState<0 | 1>(0);
@@ -109,41 +111,14 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
       }
   }, [account, isEditMode]);
 
+  // 仅在依赖变化时重新计算下次运行时间 (静态)
   useEffect(() => {
-      // 检查全局启用状态 和 独立定时器启用状态
       if (!account.cronExpression || account.enabled === false || account.cronEnabled === false) {
-          setCountdown('');
           setNextRunObj(null);
           return;
       }
-
-      const initialNext = getNextRunDate(account.cronExpression);
-      setNextRunObj(initialNext);
-
-      const updateCountdown = () => {
-          const now = Date.now();
-          let target = initialNext;
-          
-          if (!target || target.getTime() <= now) {
-             target = getNextRunDate(account.cronExpression!);
-             if (target && target.getTime() > now) {
-                 setNextRunObj(target);
-             }
-          }
-
-          if (!target) {
-              setCountdown('配置错误');
-              return;
-          }
-
-          const diff = target.getTime() - now;
-          setCountdown(formatDuration(diff, preciseCountdown));
-      };
-
-      updateCountdown(); // 立即执行一次
-      const timer = setInterval(updateCountdown, 1000);
-      return () => clearInterval(timer);
-  }, [account.cronExpression, account.enabled, account.cronEnabled, preciseCountdown]); 
+      setNextRunObj(getNextRunDate(account.cronExpression));
+  }, [account.cronExpression, account.enabled, account.cronEnabled]);
 
   const handleSaveEdit = () => {
       onEditAccount(account.id, { 
@@ -505,9 +480,13 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
                    {account.cronExpression && isAccountEnabled && isCronEnabled && (
                        <div className="relative group/timer ml-1 pl-2 border-l border-gray-600 flex items-center gap-1 cursor-help">
                            <span className="text-xs text-purple-400">⏰</span>
-                           <span className="font-mono text-xs text-purple-300 tabular-nums min-w-[4rem] text-center whitespace-nowrap">
-                               {countdown || '...'}
-                           </span>
+                           {/* 替换为 CountdownTimer，并传入精确模式配置 */}
+                           <CountdownTimer 
+                               cron={account.cronExpression} 
+                               enabled={true} 
+                               precise={preciseCountdown}
+                               className="font-mono text-xs text-purple-300 tabular-nums min-w-[4rem] text-center whitespace-nowrap"
+                           />
                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-max hidden group-hover/timer:block z-50">
                                <div className="bg-gray-900/95 backdrop-blur border border-gray-700 text-xs text-gray-300 p-2 rounded shadow-xl flex flex-col gap-1">
                                    <div className="font-bold text-purple-400 border-b border-gray-700 pb-1 mb-1">定时任务详情</div>

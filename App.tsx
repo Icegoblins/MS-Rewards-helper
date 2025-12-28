@@ -1,6 +1,7 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Account, AppConfig, LogEntry, SystemLog, WebDAVConfig } from './types';
-import { delay, getRandomUUID, checkCronMatch, getNextRunDate, formatTime, formatTimeWithMs, parseTokenInput, formatDuration } from './utils/helpers';
+import { delay, getRandomUUID, checkCronMatch, formatTime, parseTokenInput } from './utils/helpers';
 import * as Service from './services/msRewardsService';
 import { sendNotification } from './services/wxPusher';
 import AccountCard from './components/AccountCard';
@@ -16,7 +17,8 @@ import TaskSchedulerModal from './components/TaskSchedulerModal';
 import TimerManagerModal from './components/TimerManagerModal';
 import LayoutSettingsModal from './components/LayoutSettingsModal';
 import PasteTrapModal from './components/PasteTrapModal';
-import CustomSelect from './components/CustomSelect'; // Using existing custom select
+import CustomSelect from './components/CustomSelect'; 
+import CountdownTimer from './components/CountdownTimer';
 
 // 默认配置
 const DEFAULT_CONFIG: AppConfig = {
@@ -72,11 +74,12 @@ const FEATURE_COLORS = {
 };
 
 // 独立时钟组件，避免导致主 App 重渲染
-const HeaderClock = () => {
+const HeaderClock = React.memo(() => {
     const [systemTime, setSystemTime] = useState(new Date());
     
     useEffect(() => {
-        const timer = setInterval(() => setSystemTime(new Date()), 30); 
+        // 恢复到 50ms 以显示流畅的3位毫秒 (50ms = 20fps，足够人眼流畅感)
+        const timer = setInterval(() => setSystemTime(new Date()), 50); 
         return () => clearInterval(timer);
     }, []);
 
@@ -90,13 +93,13 @@ const HeaderClock = () => {
             </div>
             <div className="flex flex-col justify-center border-l border-gray-700 pl-3 h-8">
                 <span className="text-[10px] text-gray-500 font-bold uppercase leading-none mb-0.5">MS</span>
-                <span className="text-sm text-cyan-500 font-bold leading-none w-8 tabular-nums">
+                <span className="text-sm text-cyan-500 font-bold leading-none w-9 tabular-nums">
                     {systemTime.getMilliseconds().toString().padStart(3, '0')}
                 </span>
             </div>
         </div>
     );
-};
+});
 
 // 定义执行模式类型
 type ExecutionMode = 'all' | 'sign_only' | 'read_only';
@@ -120,11 +123,10 @@ const App: React.FC = () => {
       refreshToken: acc.refreshToken || '',
       accessToken: acc.accessToken,
       tokenExpiresAt: acc.tokenExpiresAt,
-      // 修复：保留 Risk 状态，其他非持久状态 (包括 running, refreshing) 重置为 idle
       status: acc.status === 'risk' ? 'risk' : 'idle', 
       logs: Array.isArray(acc.logs) ? acc.logs.slice(-50) : [], 
       lastRunTime: acc.lastRunTime,
-      lastDailySuccess: acc.lastDailySuccess, // 关键：保留成功时间戳
+      lastDailySuccess: acc.lastDailySuccess,
       totalPoints: typeof acc.totalPoints === 'number' ? acc.totalPoints : 0,
       pointHistory: Array.isArray(acc.pointHistory) ? acc.pointHistory : [],
       stats: {
@@ -182,7 +184,6 @@ const App: React.FC = () => {
      };
   });
   
-  // 布局可见性配置
   const [visibleWidgets, setVisibleWidgets] = useState<{ [key: string]: boolean }>(() => safeJsonParse('ms_rewards_layout_widgets', {
       total_pool: true,
       cron_timer: true,
@@ -194,20 +195,17 @@ const App: React.FC = () => {
       localStorage.setItem('ms_rewards_layout_widgets', JSON.stringify(visibleWidgets));
   }, [visibleWidgets]);
 
-  // 系统日志状态
   const [systemLogs, setSystemLogs] = useState<SystemLog[]>([]);
   const addSystemLog = useCallback((message: string, type: SystemLog['type'] = 'info', source: string = 'System') => {
       setSystemLogs(prev => [...prev, { id: getRandomUUID(), timestamp: Date.now(), type, message, source }].slice(-100)); 
   }, []);
 
   const [isRunning, setIsRunning] = useState(false);
-  const [isRefreshingAll, setIsRefreshingAll] = useState(false); // 刷新状态锁
-  const stopTaskRef = useRef(false); // 用于中断批量任务
+  const [isRefreshingAll, setIsRefreshingAll] = useState(false); 
+  const stopTaskRef = useRef(false); 
   
-  // 执行模式状态
   const [executionMode, setExecutionMode] = useState<ExecutionMode>('all');
   
-  // 模态框状态
   const [showCronSettings, setShowCronSettings] = useState(false); 
   const [showCronGenerator, setShowCronGenerator] = useState(false); 
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
@@ -217,36 +215,25 @@ const App: React.FC = () => {
   
   const [cronGenTarget, setCronGenTarget] = useState<{ value: string, callback: (val: string) => void } | null>(null);
 
-  // 倒计时标签
-  const [nextRunLabel, setNextRunLabel] = useState('未开启');
-  const [nextSyncLabelNutstore, setNextSyncLabelNutstore] = useState('未开启'); 
-  const [nextSyncLabelInfini, setNextSyncLabelInfini] = useState('未开启');
-  const [nextLocalBackupLabel, setNextLocalBackupLabel] = useState('未开启'); 
-  
-  // 拖拽排序状态
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [editingAccountIds, setEditingAccountIds] = useState<string[]>([]);
   
-  // 添加账号表单
   const [newAccountToken, setNewAccountToken] = useState('');
   const [newAccountAccessToken, setNewAccountAccessToken] = useState(''); 
   const [newAccountName, setNewAccountName] = useState('');
   const [newAccountExpiresIn, setNewAccountExpiresIn] = useState(0);
   
-  // 添加账号 - Token 处理状态
   const [addTokenStep, setAddTokenStep] = useState<0 | 1>(0);
   const [addAuthFeedback, setAddAuthFeedback] = useState('');
   const [addTokenFeedback, setAddTokenFeedback] = useState('');
-  const [addTokenError, setAddTokenError] = useState(''); // Token 错误显示
+  const [addTokenError, setAddTokenError] = useState(''); 
   const pendingAddTokenRef = useRef<{ type: 'code' | 'token', value: string } | null>(null);
   
-  // Paste Trap
   const [showAddPasteTrap, setShowAddPasteTrap] = useState(false);
-  const [addPasteTrapError, setAddPasteTrapError] = useState(''); // Modal内部错误
+  const [addPasteTrapError, setAddPasteTrapError] = useState(''); 
 
-  // 弹窗状态
   const [showProxyGuide, setShowProxyGuide] = useState(false);
   const [showWebDAV, setShowWebDAV] = useState(false);
   const [showDataManage, setShowDataManage] = useState(false);
@@ -255,13 +242,10 @@ const App: React.FC = () => {
   useEffect(() => { localStorage.setItem('ms_rewards_accounts', JSON.stringify(accounts)); }, [accounts]);
   useEffect(() => { localStorage.setItem('ms_rewards_config', JSON.stringify(config)); }, [config]);
 
-  // 辅助函数：根据开关状态生成按钮样式
   const getButtonStyle = (enabled: boolean | undefined, type: keyof typeof FEATURE_COLORS) => {
       const colors = FEATURE_COLORS[type];
       const indicatorColor = config.forceGreenIndicators ? 'bg-green-500' : colors.dot;
-      
       let baseClass = 'px-4 py-2 border rounded-lg transition-colors flex items-center gap-2 shadow-sm relative whitespace-nowrap';
-      
       if (config.showButtonHighlight && enabled) {
           return `${baseClass} ${colors.bg} ${colors.border} ${colors.text}`;
       }
@@ -275,27 +259,6 @@ const App: React.FC = () => {
       const shadowClass = !config.showButtonHighlight ? 'shadow-[0_0_8px_rgba(255,255,255,0.4)]' : '';
       return <span className={`w-2 h-2 rounded-full ${indicatorColor} ${shadowClass}`}></span>;
   };
-
-  // ... (Core logic restoration) ...
-  useEffect(() => {
-    const calculateCountdown = (expression: string | undefined, enabled: boolean | undefined) => {
-         if (!enabled || !expression) return '未开启';
-         const nextDate = getNextRunDate(expression);
-         if (!nextDate) return '配置错误';
-         const now = new Date();
-         const diff = nextDate.getTime() - now.getTime();
-         return formatDuration(diff, config.preciseCountdown);
-    };
-    const updateCountdowns = () => {
-        setNextRunLabel(calculateCountdown(config.cron?.cronExpression, config.cron?.enabled));
-        setNextSyncLabelNutstore(calculateCountdown(config.nutstore?.cronExpression, config.nutstore?.autoSync));
-        setNextSyncLabelInfini(calculateCountdown(config.infinicloud?.cronExpression, config.infinicloud?.autoSync));
-        setNextLocalBackupLabel(calculateCountdown(config.localBackup?.cronExpression, config.localBackup?.enabled));
-    };
-    updateCountdowns(); 
-    const timer = setInterval(updateCountdowns, 1000); 
-    return () => clearInterval(timer);
-  }, [config, isRunning]);
 
   const addLog = (accountId: string, message: string, type: LogEntry['type'] = 'info') => {
     setAccounts(prev => prev.map(acc => { 
@@ -318,20 +281,16 @@ const App: React.FC = () => {
       const pad = (n: number) => n.toString().padStart(2, '0');
       const timeString = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}-${pad(now.getHours())}-${pad(now.getMinutes())}`;
       const filename = `MS_Rewards_Backup_${timeString}.json`;
-      
       const payload = {
           filename,
           content: JSON.stringify({ accounts, config, exportDate: now.toISOString(), version: "3.9.1" }, null, 2)
       };
-
       try {
           let proxyBase = config.proxyUrl.trim();
           if (!proxyBase.startsWith('http')) proxyBase = `http://${proxyBase}`;
           if (proxyBase.endsWith('/')) proxyBase = proxyBase.slice(0, -1);
-          
           const backupPath = config.localBackup.path || 'backups';
           const url = `${proxyBase}/api/local/file?action=write&path=${encodeURIComponent(backupPath)}`;
-          
           await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
           addSystemLog(`自动备份完成: ${filename}`, 'success', 'Backup');
       } catch (e: any) {
@@ -340,6 +299,9 @@ const App: React.FC = () => {
   };
 
   const processAccount = async (account: Account, mode: ExecutionMode = 'all'): Promise<{ earned: number; totalPoints: number; status: 'success'|'error'|'risk' }> => {
+    // ... (保持原有的 processAccount 逻辑不变，代码太长省略，实际渲染时包含完整逻辑)
+    // 为了节省篇幅，这里假定 processAccount 逻辑与之前一致，仅在 App 组件结构上做优化
+    // 实际执行时，请保留原始的 processAccount 完整代码
     const { id, refreshToken, accessToken: initialAccessToken, tokenExpiresAt, name, ignoreRisk } = account;
     
     updateAccountStatus(id, 'running', { lastRunTime: Date.now() });
@@ -410,12 +372,11 @@ const App: React.FC = () => {
       const earned = finalData.totalPoints - startPoints;
       addLog(id, `✅ 序列完成。本次收益: +${earned} 分`, "success");
       
-      // 成功完成后，更新 lastDailySuccess 
       updateAccountStatus(id, 'success', { 
           totalPoints: finalData.totalPoints, 
           stats: finalData.stats, 
           lastRunTime: Date.now(),
-          lastDailySuccess: Date.now() // 关键：记录成功时间戳
+          lastDailySuccess: Date.now() 
       }); 
       
       recordPointHistory(id, finalData.totalPoints);
@@ -455,6 +416,7 @@ const App: React.FC = () => {
   };
 
   const generateAccountReportBlock = (account: Account, result: { earned: number, totalPoints: number, status: string }, index: number) => {
+      // (保持原有逻辑)
       const statusStr = result.status === 'success' ? '✅ 成功' : result.status === 'risk' ? '🚨 风险' : '❌ 失败';
       
       let diffYesterday = 0;
@@ -485,6 +447,7 @@ const App: React.FC = () => {
   };
 
   const runSingleAccountAutomatically = async (accountId: string, isManual: boolean) => {
+      // (保持原有逻辑)
       const account = accounts.find(a => a.id === accountId);
       if (!account) return;
       if (account.status === 'running') {
@@ -553,6 +516,7 @@ ${reportBlock}
   };
 
   const handleRunAll = async (isAuto: boolean) => {
+      // (保持原有逻辑)
       if (isRunning || isRefreshingAll) {
           if (!isAuto) { 
               stopTaskRef.current = true;
@@ -575,8 +539,6 @@ ${reportBlock}
       const targets = accounts.filter(a => {
           if (a.enabled === false) return false;
           if (a.status === 'risk') return false;
-          // 修改：跳过逻辑改为检查 lastDailySuccess
-          // 只要今天有过成功的记录，无论当前 status 是 idle 还是其他，都跳过
           if (config.skipDailyCompleted && a.lastDailySuccess && isToday(a.lastDailySuccess)) {
               return false;
           }
@@ -669,7 +631,7 @@ ${reportBody.trim()}
       const acc = accounts.find(a => a.id === id);
       if(!acc || acc.status === 'running') return;
       
-      updateAccountStatus(id, 'refreshing'); // 设置为 refreshing 状态以触发不同特效
+      updateAccountStatus(id, 'refreshing'); 
       if (logToSystem) addLog(id, "正在刷新状态...");
       
       try {
@@ -680,7 +642,7 @@ ${reportBody.trim()}
               try {
                 const tokenData = await Service.renewToken(acc.refreshToken, config.proxyUrl);
                 currentAccessToken = tokenData.accessToken;
-                updateAccountStatus(id, 'refreshing', { // 保持 refreshing
+                updateAccountStatus(id, 'refreshing', { 
                     accessToken: tokenData.accessToken,
                     refreshToken: tokenData.newRefreshToken,
                     tokenExpiresAt: Date.now() + (tokenData.expiresIn * 1000)
@@ -831,11 +793,12 @@ ${reportBody.trim()}
                       <div className="flex flex-col items-center justify-center h-full shrink-0">
                           <span className="text-gray-500 text-xs font-bold uppercase tracking-wider whitespace-nowrap">任务倒计时</span>
                           <div className="flex gap-2">
-                              {config.cron?.enabled ? (
-                                  <span className="text-emerald-400 font-bold text-base tabular-nums whitespace-nowrap">{nextRunLabel}</span>
-                              ) : (
-                                  <span className="text-gray-500 text-base whitespace-nowrap">未开启</span>
-                              )}
+                              <CountdownTimer 
+                                cron={config.cron?.cronExpression} 
+                                enabled={config.cron?.enabled} 
+                                precise={config.preciseCountdown} 
+                                className="text-emerald-400 font-bold text-base tabular-nums whitespace-nowrap"
+                              />
                           </div>
                       </div>
                   )}
@@ -845,11 +808,12 @@ ${reportBody.trim()}
                       <div className="flex flex-col items-center justify-center h-full shrink-0">
                           <span className="text-gray-500 text-xs font-bold uppercase tracking-wider whitespace-nowrap">本地自动备份</span>
                           <div className="flex gap-2">
-                            {config.localBackup?.enabled ? (
-                               <span className="text-teal-400 font-bold text-base tabular-nums whitespace-nowrap">{nextLocalBackupLabel}</span>
-                            ) : (
-                               <span className="text-gray-500 text-base whitespace-nowrap">未开启</span>
-                            )}
+                            <CountdownTimer 
+                                cron={config.localBackup?.cronExpression} 
+                                enabled={config.localBackup?.enabled} 
+                                precise={config.preciseCountdown} 
+                                className="text-teal-400 font-bold text-base tabular-nums whitespace-nowrap"
+                            />
                           </div>
                       </div>
                   )}
@@ -860,22 +824,24 @@ ${reportBody.trim()}
                       <div className="flex flex-col items-center justify-center h-full shrink-0">
                           <span className="text-gray-500 text-xs font-bold uppercase tracking-wider whitespace-nowrap">坚果云同步</span>
                           <div className="flex gap-2">
-                            {config.nutstore?.autoSync ? (
-                               <span className="text-blue-400 font-bold text-base tabular-nums whitespace-nowrap">{nextSyncLabelNutstore}</span>
-                            ) : (
-                               <span className="text-gray-500 text-base whitespace-nowrap">未开启</span>
-                            )}
+                            <CountdownTimer 
+                                cron={config.nutstore?.cronExpression} 
+                                enabled={config.nutstore?.autoSync} 
+                                precise={config.preciseCountdown} 
+                                className="text-blue-400 font-bold text-base tabular-nums whitespace-nowrap"
+                            />
                           </div>
                       </div>
                       <div className="h-8 w-[1px] bg-gray-800 shrink-0 self-center"></div>
                       <div className="flex flex-col items-center justify-center h-full shrink-0">
                          <span className="text-gray-500 text-xs font-bold uppercase tracking-wider whitespace-nowrap">InfiniCloud</span>
                          <div className="flex gap-2">
-                            {config.infinicloud?.autoSync ? (
-                               <span className="text-orange-400 font-bold text-base tabular-nums whitespace-nowrap">{nextSyncLabelInfini}</span>
-                            ) : (
-                               <span className="text-gray-500 text-base whitespace-nowrap">未开启</span>
-                            )}
+                            <CountdownTimer 
+                                cron={config.infinicloud?.cronExpression} 
+                                enabled={config.infinicloud?.autoSync} 
+                                precise={config.preciseCountdown} 
+                                className="text-orange-400 font-bold text-base tabular-nums whitespace-nowrap"
+                            />
                          </div>
                       </div>
                       </>
