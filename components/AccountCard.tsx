@@ -18,11 +18,105 @@ interface AccountCardProps {
   onOpenCronGenerator: (initialValue: string, callback: (val: string) => void) => void; 
   autoCloseDelay?: number; 
   proxyUrl: string; 
-  onLog: (msg: string, type: LogEntry['type'], source?: string) => void; // 接收通用 log 函数
+  onLog: (msg: string, type: LogEntry['type'], source?: string) => void; 
   cardFontSizes?: AppConfig['cardFontSizes']; 
   disableAutoClose?: boolean; 
   preciseCountdown?: boolean; 
 }
+
+// -------------------------------------------------------------------------
+// 性能优化：将子组件移至外部定义
+// 避免 AccountCard 每次渲染时重新创建组件函数，导致子组件强制卸载/重绘
+// -------------------------------------------------------------------------
+
+interface EnergyBarProps { 
+    current: number; 
+    max: number; 
+    label: string; 
+    type?: 'default' | 'pc' | 'mobile' | 'checkin' | 'daily' | 'activities'; 
+    customText?: string;
+    forceFull?: boolean;
+    alwaysShow?: boolean;
+}
+
+const EnergyBar = React.memo(({ current, max, label, type = 'default', customText, forceFull = false, alwaysShow = false }: EnergyBarProps) => {
+    if (max <= 0 && !forceFull && !alwaysShow) return null;
+    
+    const safeMax = max > 0 ? max : 1;
+    const safeCurrent = forceFull ? safeMax : current;
+    const percent = Math.min(100, Math.round((safeCurrent / safeMax) * 100));
+    const isComplete = (safeCurrent >= safeMax && max > 0) || forceFull;
+    
+    let barColor = '';
+    let textColor = '';
+    let barBg = 'bg-gray-900/60'; 
+
+    switch (type) {
+        case 'pc':
+             barColor = 'bg-[#0067B8]'; // Microsoft Blue
+             textColor = 'text-blue-400'; 
+             break;
+        case 'mobile':
+             barColor = 'bg-[#037FB0]'; // Cyan-ish Blue
+             textColor = 'text-cyan-400'; 
+             break;
+        case 'checkin':
+             barColor = 'bg-gradient-to-r from-blue-600 via-indigo-500 to-purple-600';
+             textColor = 'text-transparent bg-clip-text bg-gradient-to-r from-blue-300 to-purple-300 font-bold';
+             barBg = 'bg-blue-900/20'; 
+             break;
+        case 'daily':
+             barColor = 'bg-gradient-to-r from-amber-500 to-orange-600';
+             textColor = 'text-transparent bg-clip-text bg-gradient-to-r from-amber-300 to-orange-300 font-bold';
+             barBg = 'bg-orange-900/20';
+             break;
+        case 'activities':
+             barColor = 'bg-gradient-to-r from-pink-500 to-rose-500';
+             textColor = 'text-pink-300 font-bold';
+             barBg = 'bg-pink-900/20';
+             break;
+        case 'default':
+        default:
+             barColor = isComplete ? 'bg-emerald-500' : 'bg-blue-500';
+             textColor = isComplete ? 'text-emerald-400' : 'text-blue-400';
+             break;
+    }
+    
+    let statusText = `${current}/${max}`;
+    
+    if (max <= 0 && !customText) {
+        statusText = '--/--'; 
+    } else if (customText) {
+        statusText = customText;
+    } else if ((type === 'checkin' || type === 'daily') && max > 100) {
+        statusText = current > 0 ? `🔥 已签 ${current} 天` : '未签到';
+    } else if ((type === 'checkin' || type === 'daily') && max === 1) {
+        statusText = current > 0 ? '已完成' : '未签到';
+    }
+
+    const displayPercent = (max <= 0 && !forceFull) ? 0 : percent;
+
+    return (
+      <div className="flex flex-col gap-1 w-full mt-1">
+          <div className="flex justify-between items-end text-[10px] text-gray-500 font-mono font-medium uppercase truncate">
+              <span className="truncate pr-2" title={label}>{label}</span>
+              <span className={`shrink-0 ${textColor}`}>
+                  {statusText}
+              </span>
+          </div>
+          <div className={`h-1.5 w-full rounded-full overflow-hidden ${barBg}`}>
+               <div 
+                  className={`h-full rounded-full transition-all duration-500 ease-out ${barColor}`} 
+                  style={{ width: `${displayPercent}%` }}
+               ></div>
+          </div>
+      </div>
+    );
+});
+
+// -------------------------------------------------------------------------
+// Main Component
+// -------------------------------------------------------------------------
 
 const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMonitor, onRefresh, onRunSingle, onEditAccount, onEditModeChange, onOpenCronGenerator, autoCloseDelay = 30, proxyUrl, onLog, cardFontSizes, disableAutoClose = false, preciseCountdown = false }) => {
   const [isEditMode, setIsEditMode] = useState(false);
@@ -51,9 +145,6 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
   const fontTotal = cardFontSizes?.totalPoints || 'text-3xl';
   const fontChange = cardFontSizes?.dailyChange || 'text-2xl';
 
-  // 1. 稳定的 Log 处理函数
-  // 即使父组件传入的 onLog 改变引用 (虽然父组件已经 useCallback，但防万一)，
-  // 我们这里也可以再做一层保护，或者直接使用。
   const handleLog = useCallback((msg: string, type: LogEntry['type'] = 'info') => {
       onLog(msg, type, `Account:${account.name}`);
   }, [onLog, account.name]);
@@ -114,8 +205,6 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
       }
   }, [account, isEditMode]);
 
-  // 优化计算 Next Run Date，只在悬停时或配置改变时计算
-  // 使用 useMemo 而不是 state 避免不必要的 effect 触发
   const nextRunObj = useMemo(() => {
       if (!account.cronExpression || account.enabled === false || account.cronEnabled === false) {
           return null;
@@ -210,9 +299,7 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
   const getStatusStyle = (status: Account['status'], isEnabled: boolean) => {
     if (!isEnabled) return 'border-gray-700 bg-gray-900/50 opacity-60 grayscale'; 
     switch (status) {
-      // 任务执行中 - 恢复经典脉冲效果，并将紫色替换为科技青
       case 'running': return 'border-blue-500 bg-gray-800/95 shadow-[0_0_20px_-5px_rgba(59,130,246,0.6)] relative after:absolute after:inset-0 after:bg-gradient-to-tr after:from-blue-500/10 after:to-cyan-500/10 after:animate-pulse after:-z-10 after:rounded-2xl ring-1 ring-blue-400/30';
-      // 刷新中 - 青色呼吸边框
       case 'refreshing': return 'border-cyan-500/50 bg-gray-800/80 shadow-[0_0_15px_rgba(6,182,212,0.15)] animate-pulse ring-1 ring-cyan-400/20';
       case 'success': return 'border-emerald-500 bg-gray-800 shadow-none'; 
       case 'error': return 'border-rose-500 bg-gray-800 shadow-none';
@@ -224,7 +311,6 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
 
   const getStatusIcon = () => {
       if (account.enabled === false) return <div className="w-2 h-2 rounded-full bg-gray-600" />;
-      // 运行中图标：使用纯蓝色呼吸灯，配合蓝色边框
       if (account.status === 'running') return <div className="w-2 h-2 rounded-full bg-blue-400 animate-ping opacity-90 shadow-[0_0_8px_#3b82f6]" />;
       if (account.status === 'refreshing') return <div className="w-2 h-2 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin" />;
       if (account.status === 'success') return <div className="w-2 h-2 rounded-full bg-emerald-400" />;
@@ -252,91 +338,6 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
       }
       return { text: '长期凭证激活 (自动续期)', color: 'text-emerald-300', bg: 'bg-emerald-900/20', border: 'border-emerald-700/30' };
   };
-
-  interface EnergyBarProps { 
-      current: number; 
-      max: number; 
-      label: string; 
-      type?: 'default' | 'pc' | 'mobile' | 'checkin' | 'daily' | 'activities'; 
-      customText?: string;
-      forceFull?: boolean;
-      alwaysShow?: boolean;
-  }
-
-  const EnergyBar = React.memo(({ current, max, label, type = 'default', customText, forceFull = false, alwaysShow = false }: EnergyBarProps) => {
-      if (max <= 0 && !forceFull && !alwaysShow) return null;
-      
-      const safeMax = max > 0 ? max : 1;
-      const safeCurrent = forceFull ? safeMax : current;
-      const percent = Math.min(100, Math.round((safeCurrent / safeMax) * 100));
-      const isComplete = (safeCurrent >= safeMax && max > 0) || forceFull;
-      
-      let barColor = '';
-      let textColor = '';
-      let barBg = 'bg-gray-900/60'; 
-
-      switch (type) {
-          case 'pc':
-               barColor = 'bg-[#0067B8]'; // Microsoft Blue
-               textColor = 'text-blue-400'; 
-               break;
-          case 'mobile':
-               barColor = 'bg-[#037FB0]'; // Cyan-ish Blue
-               textColor = 'text-cyan-400'; 
-               break;
-          case 'checkin':
-               barColor = 'bg-gradient-to-r from-blue-600 via-indigo-500 to-purple-600';
-               textColor = 'text-transparent bg-clip-text bg-gradient-to-r from-blue-300 to-purple-300 font-bold';
-               barBg = 'bg-blue-900/20'; 
-               break;
-          case 'daily':
-               barColor = 'bg-gradient-to-r from-amber-500 to-orange-600';
-               textColor = 'text-transparent bg-clip-text bg-gradient-to-r from-amber-300 to-orange-300 font-bold';
-               barBg = 'bg-orange-900/20';
-               break;
-          case 'activities':
-               barColor = 'bg-gradient-to-r from-pink-500 to-rose-500';
-               textColor = 'text-pink-300 font-bold';
-               barBg = 'bg-pink-900/20';
-               break;
-          case 'default':
-          default:
-               barColor = isComplete ? 'bg-emerald-500' : 'bg-blue-500';
-               textColor = isComplete ? 'text-emerald-400' : 'text-blue-400';
-               break;
-      }
-      
-      let statusText = `${current}/${max}`;
-      
-      if (max <= 0 && !customText) {
-          statusText = '--/--'; 
-      } else if (customText) {
-          statusText = customText;
-      } else if ((type === 'checkin' || type === 'daily') && max > 100) {
-          statusText = current > 0 ? `🔥 已签 ${current} 天` : '未签到';
-      } else if ((type === 'checkin' || type === 'daily') && max === 1) {
-          statusText = current > 0 ? '已完成' : '未签到';
-      }
-
-      const displayPercent = (max <= 0 && !forceFull) ? 0 : percent;
-
-      return (
-        <div className="flex flex-col gap-1 w-full mt-1">
-            <div className="flex justify-between items-end text-[10px] text-gray-500 font-mono font-medium uppercase truncate">
-                <span className="truncate pr-2" title={label}>{label}</span>
-                <span className={`shrink-0 ${textColor}`}>
-                    {statusText}
-                </span>
-            </div>
-            <div className={`h-1.5 w-full rounded-full overflow-hidden ${barBg}`}>
-                 <div 
-                    className={`h-full rounded-full transition-all duration-500 ease-out ${barColor}`} 
-                    style={{ width: `${displayPercent}%` }}
-                 ></div>
-            </div>
-        </div>
-      );
-  });
 
   const tokenStatus = getTokenStatus();
   const isAccountEnabled = account.enabled !== false;
@@ -651,5 +652,4 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
   );
 };
 
-// 使用 React.memo 包装，仅在 props 真正变化时重渲染
 export default React.memo(AccountCard);

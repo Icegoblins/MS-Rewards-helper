@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Account, AppConfig, LogEntry, SystemLog, WebDAVConfig } from './types';
-import { delay, getRandomUUID, checkCronMatch, formatTime, parseTokenInput } from './utils/helpers';
+import { delay, getRandomUUID, checkCronMatch, getNextRunDate, formatTime, formatTimeWithMs, parseTokenInput, formatDuration } from './utils/helpers';
 import * as Service from './services/msRewardsService';
 import { sendNotification } from './services/wxPusher';
 import AccountCard from './components/AccountCard';
@@ -252,8 +252,17 @@ const App: React.FC = () => {
   const [showDataManage, setShowDataManage] = useState(false);
   const [monitorAccountId, setMonitorAccountId] = useState<string | null>(null);
 
-  useEffect(() => { localStorage.setItem('ms_rewards_accounts', JSON.stringify(accounts)); }, [accounts]);
-  useEffect(() => { localStorage.setItem('ms_rewards_config', JSON.stringify(config)); }, [config]);
+  // 使用 Ref 保持对最新状态的引用，供定时器使用
+  const accountsRef = useRef(accounts);
+  const configRef = useRef(config);
+  const isRunningRef = useRef(isRunning);
+  const isRefreshingAllRef = useRef(isRefreshingAll);
+
+  // 同步 Refs
+  useEffect(() => { accountsRef.current = accounts; localStorage.setItem('ms_rewards_accounts', JSON.stringify(accounts)); }, [accounts]);
+  useEffect(() => { configRef.current = config; localStorage.setItem('ms_rewards_config', JSON.stringify(config)); }, [config]);
+  useEffect(() => { isRunningRef.current = isRunning; }, [isRunning]);
+  useEffect(() => { isRefreshingAllRef.current = isRefreshingAll; }, [isRefreshingAll]);
 
   const getButtonStyle = (enabled: boolean | undefined, type: keyof typeof FEATURE_COLORS) => {
       const colors = FEATURE_COLORS[type];
@@ -273,7 +282,6 @@ const App: React.FC = () => {
       return <span className={`w-2 h-2 rounded-full ${indicatorColor} ${shadowClass}`}></span>;
   };
 
-  // 使用 useCallback 确保引用稳定，防止子组件无谓重绘
   const addLog = useCallback((accountId: string, message: string, type: LogEntry['type'] = 'info') => {
     setAccounts(prev => prev.map(acc => { 
         if (acc.id === accountId) { 
@@ -462,8 +470,6 @@ const App: React.FC = () => {
   };
 
   // 稳定引用：单账号运行
-  // 即使依赖变化，useCallback 也能减少不必要的生成，但这里主要是给 AccountCard 传 inline function 的问题
-  // 见下文 AccountCard 修改
   const runSingleAccountAutomatically = async (accountId: string, isManual: boolean) => {
       const account = accounts.find(a => a.id === accountId);
       if (!account) return;
@@ -581,9 +587,9 @@ ${reportBlock}
       setIsRefreshingAll(false);
   };
 
-  const handleRunAll = async (isAuto: boolean) => {
-      // (保持原有逻辑)
-      if (isRunning || isRefreshingAll) {
+  // 重要：使用 useCallback 封装 handleRunAll 以供调度器调用，但避免频繁变化
+  const handleRunAll = useCallback(async (isAuto: boolean) => {
+      if (isRunningRef.current || isRefreshingAllRef.current) {
           if (!isAuto) { 
               stopTaskRef.current = true;
               addSystemLog("⚠️ 正在尝试中断任务...", "warning", 'User');
@@ -595,18 +601,23 @@ ${reportBlock}
       stopTaskRef.current = false;
       const source = isAuto ? 'Scheduler' : 'User';
       
-      const isToday = (ts: number | undefined) => {
-          if (!ts) return false;
-          const date = new Date(ts);
-          const now = new Date();
-          return date.getDate() === now.getDate() && date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
-      };
-
+      // 注意：这里需要直接读取 accountsRef 和 configRef，因为函数闭包内是旧值
+      // 但为了简单，我们在组件外层用 useRef 代理了最新的 accounts 和 config
+      // 然而 handleRunAll 实际上是在组件渲染时定义的，它闭包里有 accounts。
+      // 所以我们不能在这里直接读 Ref，而是应该依赖于 accounts 状态。
+      // 这里的优化点在于：调度器 (setInterval) 如何调用这个函数。
+      
+      // 方案调整：我们将逻辑移入 useEffect 内部，不再依赖 handleRunAll 的闭包。
+      
       const targets = accounts.filter(a => {
           if (a.enabled === false) return false;
           if (a.status === 'risk') return false;
-          if (config.skipDailyCompleted && a.lastDailySuccess && isToday(a.lastDailySuccess)) {
-              return false;
+          if (config.skipDailyCompleted && a.lastDailySuccess) {
+              const date = new Date(a.lastDailySuccess);
+              const now = new Date();
+              if (date.getDate() === now.getDate() && date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear()) {
+                  return false;
+              }
           }
           return true;
       });
@@ -691,7 +702,7 @@ ${reportBody.trim()}
               }
           }
       }
-  };
+  }, [accounts, config, executionMode, addSystemLog]); // 依赖项保留，但在定时器中我们不直接调用它
 
   const handleDataImport = (newAccounts: Account[], newConfig: AppConfig | null, mode: 'merge' | 'overwrite', importedSystemLogs?: SystemLog[]) => { setAccounts(sanitizeAccounts(newAccounts)); if(newConfig) setConfig(c => ({...c, ...newConfig})); };
   const handleWebDAVImport = (newAccounts: Account[], newConfig?: AppConfig, importedSystemLogs?: SystemLog[]) => { handleDataImport(newAccounts, newConfig || null, 'overwrite', importedSystemLogs); };
@@ -726,18 +737,17 @@ ${reportBody.trim()}
       addSystemLog(`删除账号: ${name}`, 'warning', 'System'); 
   }, [accounts, monitorAccountId, addSystemLog]);
   
-  // Token logic ... (omitted similar helper functions for brevity, keep existing logic)
-  const handleAddCopyAuthLink = async () => { /* ... existing ... */ 
+  const handleAddCopyAuthLink = async () => { /* ... */ 
       const scope = encodeURIComponent("service::prod.rewardsplatform.microsoft.com::MBI_SSL offline_access openid profile");
       const link = `https://login.live.com/oauth20_authorize.srf?client_id=0000000040170455&scope=${scope}&response_type=code&redirect_uri=https://login.live.com/oauth20_desktop.srf&prompt=login`;
       try { await navigator.clipboard.writeText(link); setAddAuthFeedback('链接已复制'); setTimeout(() => setAddAuthFeedback(''), 1500); } catch (err) { alert('无法写入剪贴板'); }
   };
-  const handleAddTextRead = async (text: string) => { /* ... existing ... */ 
+  const handleAddTextRead = async (text: string) => { /* ... */ 
       const result = parseTokenInput(text);
       if (!result) { const errMsg = '格式错误'; if (showAddPasteTrap) { setAddPasteTrapError(errMsg); setTimeout(() => setAddPasteTrapError(''), 3000); } else { setAddTokenError(`❌ ${errMsg}`); setTimeout(() => setAddTokenError(''), 4000); } return; }
       setAddTokenError(''); setAddPasteTrapError(''); pendingAddTokenRef.current = result; setAddTokenStep(1); setShowAddPasteTrap(false);
   };
-  const handleAddTokenUpdateClick = async () => { /* ... existing ... */ 
+  const handleAddTokenUpdateClick = async () => { /* ... */ 
       if (addTokenStep === 0) { setAddTokenError(''); if (navigator.clipboard && navigator.clipboard.readText) { try { const text = await navigator.clipboard.readText(); await handleAddTextRead(text); return; } catch (e) {} } setShowAddPasteTrap(true); setAddPasteTrapError(''); } 
       else { if (!pendingAddTokenRef.current) return setAddTokenStep(0); try { let finalRefreshToken = pendingAddTokenRef.current.value; let finalAccessToken = ''; let finalExpiresIn = 0; if (pendingAddTokenRef.current.type === 'code') { const tokens = await Service.exchangeCodeForToken(pendingAddTokenRef.current.value, config.proxyUrl); finalRefreshToken = tokens.refreshToken; finalAccessToken = tokens.accessToken; finalExpiresIn = tokens.expiresIn; } setNewAccountToken(finalRefreshToken); setNewAccountAccessToken(finalAccessToken); setNewAccountExpiresIn(finalExpiresIn); setAddTokenFeedback('凭证已就绪'); setTimeout(() => setAddTokenFeedback(''), 2000); } catch (e: any) { setAddTokenError(`❌ 错误: ${e.message}`); } finally { setAddTokenStep(0); pendingAddTokenRef.current = null; } }
   };
@@ -764,31 +774,80 @@ ${reportBody.trim()}
   
   const handleApplyCronGen = (expr: string) => { if (cronGenTarget) { cronGenTarget.callback(expr); setCronGenTarget(null); } setShowCronGenerator(false); };
 
+  // -------------------------------------------------------------------------
+  // 核心调度器 (优化版)
+  // 使用 Refs 避免 useEffect 频繁触发
+  // -------------------------------------------------------------------------
   useEffect(() => {
+      // 每 5 秒检查一次
       const checkTimer = setInterval(() => {
+          // 直接从 Ref 获取最新状态，不依赖闭包
+          const currentConfig = configRef.current;
+          const currentAccounts = accountsRef.current;
+          const currentIsRunning = isRunningRef.current;
+          const currentIsRefreshing = isRefreshingAllRef.current;
+
+          if (currentIsRunning || currentIsRefreshing) return;
+
           const now = new Date();
           const nowTs = now.getTime();
           
-          if (config.cron?.enabled && config.cron.cronExpression && !isRunning && !isRefreshingAll) {
-              const lastRun = config.cron.lastRunTime || 0;
-              if (checkCronMatch(config.cron.cronExpression, now)) {
-                   if (nowTs - lastRun > 60000) handleRunAll(true);
+          // 1. 全局 Cron 检查
+          if (currentConfig.cron?.enabled && currentConfig.cron.cronExpression) {
+              const lastRun = currentConfig.cron.lastRunTime || 0;
+              // 防止1分钟内多次触发 (60s buffer)
+              if (nowTs - lastRun > 60000) {
+                  if (checkCronMatch(currentConfig.cron.cronExpression, now)) {
+                       // 触发逻辑：这里必须调用 handleRunAll(true)
+                       // 由于是在 useEffect 内部，且 handleRunAll 有依赖，这里会有闭包问题
+                       // 但我们已经在上方定义 handleRunAll 时使用了 useCallback，
+                       // 所以这里直接调用组件作用域内的 handleRunAll 实际上是安全的吗？
+                       // 不，因为 useEffect 依赖列表为空。
+                       // 解决方案：这里我们不直接调用，而是设置一个标志位或者强制刷新。
+                       // 更简单的方案：在这里直接手动 click 那个按钮? 不行。
+                       
+                       // 正确做法：既然我们已经有了最新的 Ref，我们可以在这里直接调用 `handleRunAll(true)`，
+                       // 但前提是 handleRunAll 也是 Ref 或者稳定的。
+                       // 让我们简化：只在这个 useEffect 里使用 handleRunAll，并将其加入依赖？
+                       // 不行，因为 handleRunAll 依赖 accounts，会导致 interval 重置。
+                       
+                       // 终极方案：在该 useEffect 内部，如果触发了条件，则通过 setTriggerRun 状态来通知。
+                       // 但这样会导致一次重渲染。
+                       
+                       // 这里我们采用直接调用 handleRunAll 的方式，但忽略 lint 警告，
+                       // 因为我们知道 handleRunAll 在每次 render 时都会更新闭包。
+                       // 只要这个 useEffect 每次 render 都重新挂载... 不，我们就是要避免重新挂载。
+                       
+                       // 所以，我们必须使用一个 Ref 来存储最新的 handleRunAll 函数。
+                       handleRunAllRef.current(true);
+                  }
               }
           }
 
-          accounts.forEach(acc => {
+          // 2. 单账号 Cron 检查
+          currentAccounts.forEach(acc => {
               if (acc.enabled !== false && acc.cronEnabled !== false && acc.cronExpression) {
                   const accLastRun = acc.lastRunTime || 0;
-                  if (checkCronMatch(acc.cronExpression, now)) {
-                      if (nowTs - accLastRun > 60000) {
-                          runSingleAccountAutomatically(acc.id, false);
+                  if (nowTs - accLastRun > 60000) {
+                      if (checkCronMatch(acc.cronExpression, now)) {
+                          // 调用最新的 runSingle
+                          runSingleAccountRef.current(acc.id, false);
                       }
                   }
               }
           });
       }, 5000);
       return () => clearInterval(checkTimer);
-  }, [config, isRunning, isRefreshingAll, handleRunAll, systemLogs]);
+  }, []); // 空依赖列表！
+
+  // 辅助 Refs 用于在 interval 中调用最新函数
+  const handleRunAllRef = useRef(handleRunAll);
+  const runSingleAccountRef = useRef(runSingleAccountAutomatically);
+  
+  useEffect(() => { handleRunAllRef.current = handleRunAll; }, [handleRunAll]);
+  useEffect(() => { runSingleAccountRef.current = runSingleAccountAutomatically; }, [runSingleAccountAutomatically]);
+
+  // -------------------------------------------------------------------------
 
   const executionOptions = [
       { label: '默认 (全做)', value: 'all' },
