@@ -457,15 +457,15 @@ const App: React.FC = () => {
       const pcStr = `${s.pcSearchProgress}/${s.pcSearchMax}`;
       const mobStr = `${s.mobileSearchProgress}/${s.mobileSearchMax}`;
       const actStr = `${s.dailyActivitiesProgress || 0}/${s.dailyActivitiesMax || 0}`;
-      const checkInStr = s.checkInProgress ? `🔥 已签 ${s.checkInProgress} 天` : '未签到';
+      const checkInStr = s.checkInProgress ? `已签 ${s.checkInProgress} 天` : '未签到';
 
       return `[${index}] ${account.name}
 ● 状态: ${statusStr}
 ● 积分: ${result.totalPoints.toLocaleString()} (本轮+${result.earned} | 较昨日${diffStr})
 ● 阅读: ${readStr}
-● 搜索: [电脑] ${pcStr} | [移动] ${mobStr}
+● 搜索: 电脑 ${pcStr} | 移动 ${mobStr}
 ● 活动: ${actStr}
-● 签到: [SAPPHIRE] ${checkInStr}
+● 签到: SAPPHIRE ${checkInStr}
 -----------------------`;
   };
 
