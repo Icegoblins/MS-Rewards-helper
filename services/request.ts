@@ -5,7 +5,7 @@ export const CN_HEADERS = {
   "x-rewards-country": "cn",
   "x-rewards-language": "zh",
   "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-  "x-rewards-appid": "SAAndroid/31.4.2110003555",
+  "x-rewards-appid": "SAAndroid/32.0.211024001",
   "x-rewards-ismobile": "true",
   "x-rewards-partnerid": "startapp",
   "x-rewards-flights": "rwgobig",

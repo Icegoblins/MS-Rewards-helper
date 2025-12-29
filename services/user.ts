@@ -29,14 +29,10 @@ export const getDashboardData = async (accessToken: string, proxyUrl: string, ig
     const appResponse = appDataRaw?.response || {};
     const totalPoints = appResponse.balance ?? 0;
 
-    // --- DEBUG LOG START: 打印 API 根节点 Keys ---
+    // --- DEBUG LOG START ---
     if (appResponse) {
         console.groupCollapsed(`📊 Dashboard Data Debug: ${new Date().toLocaleTimeString()}`);
         console.log("Raw Response Keys:", Object.keys(appResponse));
-        
-        if (!appResponse.redeemGoal) {
-            console.warn("❌ [Goal Missing] Could not find 'redeemGoal' object in API response.");
-        }
     }
     // --- DEBUG LOG END ---
 
@@ -87,7 +83,9 @@ export const getDashboardData = async (accessToken: string, proxyUrl: string, ig
         
         // 2. Sapphire App 签到 (Gamification_Sapphire_DailyCheckIn)
         else if (offerId === "gamification_sapphire_dailycheckin") {
-            stats.checkInMax = max > 0 ? max : 7;
+            // 修复：如果 max 值异常大 (如 11760)，强制修正为 7 或 14，避免 UI 进度条显示错误
+            const fixedMax = (max > 31) ? 7 : (max > 0 ? max : 7);
+            stats.checkInMax = fixedMax;
             stats.checkInProgress = progress;
         }
 
@@ -112,7 +110,6 @@ export const getDashboardData = async (accessToken: string, proxyUrl: string, ig
         // 4. 日常活动 (Daily Activities / More Activities)
         // 包含: DailyGlobalOffer, ZHCN_Rewards, ZHstar_Rewards, Campaign 等
         else if (
-            
             offerId.includes("zhcn") || 
             offerId.includes("zhstar") ||
             offerId.includes("campaign")
@@ -131,8 +128,6 @@ export const getDashboardData = async (accessToken: string, proxyUrl: string, ig
                  stats.dailySetProgress += progress;
              }
         }
-
-        
       }
     }
     
