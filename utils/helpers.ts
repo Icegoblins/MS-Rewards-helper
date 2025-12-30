@@ -1,6 +1,8 @@
 
+
 // @ts-ignore
 import Cron from 'croner';
+import { Account } from '../types';
 
 export const getRandomUUID = (only = false): string => {
   // @ts-ignore
@@ -28,6 +30,21 @@ export const formatTimeWithMs = (date: Date): string => {
   const pad = (n: number) => n.toString().padStart(2, '0');
   const ms = date.getMilliseconds().toString().padStart(3, '0');
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${ms}`;
+};
+
+// 获取当前本地时间的 ISO 格式字符串 (不带时区后缀，即 Wall Clock Time)
+// 例如北京时间下午3点: "2025-12-29T15:00:00.000"
+export const getCurrentLocalISOString = (): string => {
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const year = now.getFullYear();
+    const month = pad(now.getMonth() + 1);
+    const day = pad(now.getDate());
+    const hours = pad(now.getHours());
+    const minutes = pad(now.getMinutes());
+    const seconds = pad(now.getSeconds());
+    const ms = now.getMilliseconds().toString().padStart(3, '0');
+    return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${ms}`;
 };
 
 export const formatShortDate = (date: Date | null): string => {
@@ -132,7 +149,8 @@ export const checkCronMatch = (cronExpression: string, date: Date = new Date()):
       if (!cronExpression || !cronExpression.trim()) return false;
       
       // 创建 Cron 实例
-      const job = new Cron(cronExpression);
+      // @ts-ignore
+      const job = new (Cron as any)(cronExpression);
       // 获取基于当前时间(减去一点缓冲)的下一次运行时间
       const next = job.nextRun(new Date(date.getTime() - 60000));
       
@@ -155,7 +173,8 @@ export const getNextRunDate = (cronExpression: string): Date | null => {
     try {
         if (!cronExpression) return null;
         // Explicitly start from now
-        return new Cron(cronExpression).nextRun(new Date());
+        // @ts-ignore
+        return new (Cron as any)(cronExpression).nextRun(new Date());
     } catch (e) {
         return null;
     }
@@ -163,4 +182,88 @@ export const getNextRunDate = (cronExpression: string): Date | null => {
 
 export const getNextRunTime = (cronExpression: string): string => {
     return formatShortDate(getNextRunDate(cronExpression));
+};
+
+// --- 通用报告生成逻辑 (DRY) ---
+
+/**
+ * 计算账号今日积分增量
+ */
+export const getDailyDiff = (acc: Account): number => {
+    let diff = 0;
+    if (acc.pointHistory && acc.pointHistory.length > 0) {
+        const todayStr = new Date().toDateString();
+        const lastRecordNotToday = [...acc.pointHistory].reverse().find(h => new Date(h.date).toDateString() !== todayStr);
+        
+        if (lastRecordNotToday) {
+            diff = acc.totalPoints - lastRecordNotToday.points;
+        } else {
+            // 如果只有今天的记录，且记录数 > 1，取最新减最旧；否则视为 0 或当日新增
+            const firstToday = acc.pointHistory[0];
+            diff = acc.totalPoints - firstToday.points;
+        }
+    }
+    return diff;
+};
+
+/**
+ * 生成标准化的账号状态报告 (Markdown)
+ * @param account 账号对象
+ * @param index 序号 (可选)
+ * @param overrides 运行时数据覆盖 (用于自动任务执行后的即时报告)
+ */
+export const generateAccountReport = (
+    account: Account, 
+    index: number = 1, 
+    overrides?: { status?: string, totalPoints?: number, earned?: number }
+): string => {
+    const totalPoints = overrides?.totalPoints ?? account.totalPoints;
+    const status = overrides?.status ?? account.status;
+    const earned = overrides?.earned; // 如果未提供，尝试计算 diff
+
+    // 状态文案映射
+    const statusMap: Record<string, string> = {
+        'success': '✅ 成功', 
+        'risk': '🚨 风险', 
+        'error': '❌ 失败',
+        'idle': '闲置',
+        'running': '运行中',
+        'waiting': '等待',
+        'refreshing': '刷新中'
+    };
+    const statusStr = statusMap[status] || status;
+
+    // 积分变化 (如果有明确的 earned 则显示本轮收益，否则显示今日增量)
+    let diffStr = '';
+    if (earned !== undefined) {
+        // 自动任务场景：显示本轮收益 + 较昨日变化
+        const dailyDiff = getDailyDiff({ ...account, totalPoints }); // 使用最新的分数计算Diff
+        diffStr = `(本轮+${earned} | 较昨日${dailyDiff >= 0 ? '+' : ''}${dailyDiff})`;
+    } else {
+        // 静态展示场景：显示今日增量
+        const dailyDiff = getDailyDiff(account);
+        diffStr = `(今日${dailyDiff >= 0 ? '+' : ''}${dailyDiff})`;
+    }
+
+    const s = account.stats;
+    const readStr = `${s.readProgress}/${s.readMax}`;
+    const pcStr = `${s.pcSearchProgress}/${s.pcSearchMax}`;
+    const mobStr = `${s.mobileSearchProgress}/${s.mobileSearchMax}`;
+    const actStr = `${s.dailyActivitiesProgress || 0}/${s.dailyActivitiesMax || 0}`;
+    const checkInStr = s.checkInProgress ? `已签 ${s.checkInProgress} 天` : '未签到';
+    
+    // Type 103 状态
+    // 如果任务刚成功(status=success) 或者 记录显示今日已完成
+    const isType103Done = (status === 'success') || !!(account.lastDailySuccess && new Date(account.lastDailySuccess).toDateString() === new Date().toDateString());
+    const type103Str = isType103Done ? "Activation" : "未激活";
+
+    // 格式化输出
+    return `[${index}] ${account.name}
+● 状态: ${statusStr}
+● 积分: ${totalPoints.toLocaleString()} ${diffStr}
+● 阅读: ${readStr}
+● 搜索: 电脑 ${pcStr} | 移动 ${mobStr}
+● 活动: ${actStr}
+● 签到: SAPPHIRE ${checkInStr} | Type 103 ${type103Str}
+-----------------------`;
 };

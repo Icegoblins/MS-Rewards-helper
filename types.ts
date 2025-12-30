@@ -141,6 +141,12 @@ export interface AppConfig {
   
   // 监控面板配置
   monitorLogDays?: number; // 监控日志显示天数，默认 1 (当天)
+  monitorChartConfig?: {   // 监控图表配置 (New v3.9.2)
+      showPoints: boolean;
+      showGridLines: boolean;
+      showLabels: boolean;
+      dateRange: 0 | 7 | 15 | 30;
+  };
 
   // UI/UX 配置 (v3.4 新增)
   clockPosition?: 'left' | 'right'; // 毫秒时钟位置

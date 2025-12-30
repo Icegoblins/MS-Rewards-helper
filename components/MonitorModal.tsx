@@ -1,27 +1,29 @@
 
 import React, { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react';
-import { Account, LogEntry, PointHistoryItem } from '../types';
+import { Account, LogEntry, PointHistoryItem, AppConfig } from '../types';
 import { formatTime } from '../utils/helpers';
 import ToggleSwitch from './ToggleSwitch';
 
 interface MonitorModalProps {
   account: Account | null;
   onClose: () => void;
-  configLogDays?: number; 
+  config: AppConfig;
+  onUpdateConfig: (newConfig: AppConfig | ((prev: AppConfig) => AppConfig)) => void;
 }
 
 interface DayGroup {
-    date: string; // YYYY-MM-DD (Localized)
+    date: string; // YYYY-MM-DD (Local Date String)
     timestamp: number;
     points: number; // 当天最后一次记录的积分
     diff: number;   // 当天最后积分 - 前一天最后积分
     items: PointHistoryItem[];
+    isGap?: boolean; // 标记是否为自动填充的空缺日
 }
 
 type SpeedPreset = 'slow' | 'normal' | 'fast' | 'turbo' | 'instant';
 type DateRange = 7 | 15 | 30 | 0; // 0 = All
 
-const MonitorModal: React.FC<MonitorModalProps> = ({ account, onClose, configLogDays = 1 }) => {
+const MonitorModal: React.FC<MonitorModalProps> = ({ account, onClose, config, onUpdateConfig }) => {
   const [activeTab, setActiveTab] = useState<'logs' | 'history'>('history');
   const [expandedDate, setExpandedDate] = useState<string | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -30,17 +32,33 @@ const MonitorModal: React.FC<MonitorModalProps> = ({ account, onClose, configLog
   const [queue, setQueue] = useState<LogEntry[]>([]);
   const processingRef = useRef(false);
   
-  // 速度控制状态
+  // 速度控制状态 (Logs 速度暂不持久化，因为属于临时调试需求)
   const [speed, setSpeed] = useState<SpeedPreset>('normal');
   
-  // 图表配置状态
+  // 图表配置 - 直接从全局 Config 读取
   const [showChartSettings, setShowChartSettings] = useState(false);
-  const [chartConfig, setChartConfig] = useState({
+  
+  const chartConfig = config.monitorChartConfig || {
       showPoints: true,
       showGridLines: true,
       showLabels: false,
-      dateRange: 30 as DateRange
-  });
+      dateRange: 30
+  };
+
+  const updateChartConfig = (updates: Partial<typeof chartConfig>) => {
+      onUpdateConfig(prev => ({
+          ...prev,
+          monitorChartConfig: {
+              ...(prev.monitorChartConfig || {
+                  showPoints: true,
+                  showGridLines: true,
+                  showLabels: false,
+                  dateRange: 30
+              }),
+              ...updates
+          }
+      }));
+  };
   
   // 图表尺寸响应式状态
   const [chartDimensions, setChartDimensions] = useState({ width: 0, height: 0 });
@@ -73,8 +91,9 @@ const MonitorModal: React.FC<MonitorModalProps> = ({ account, onClose, configLog
 
   useEffect(() => {
     if (activeTab === 'logs' && account?.logs) {
+        const logDays = config.monitorLogDays || 1;
         const now = new Date();
-        const cutoffTime = new Date(now.setDate(now.getDate() - (configLogDays - 1)));
+        const cutoffTime = new Date(now.setDate(now.getDate() - (logDays - 1)));
         cutoffTime.setHours(0,0,0,0);
         
         const filtered = account.logs.filter(l => l.timestamp >= cutoffTime.getTime());
@@ -83,7 +102,7 @@ const MonitorModal: React.FC<MonitorModalProps> = ({ account, onClose, configLog
         setQueue(filtered);
         processingRef.current = false;
     }
-  }, [account?.id, activeTab, configLogDays]); 
+  }, [account?.id, activeTab, config.monitorLogDays]); 
 
   // 动态变速打字机
   useEffect(() => {
@@ -141,42 +160,80 @@ const MonitorModal: React.FC<MonitorModalProps> = ({ account, onClose, configLog
 
   if (!account) return null;
 
-  // 核心逻辑：数据按天聚合
+  // 核心逻辑：数据按天聚合 (支持 Gap Filling - 自动填补缺失日期)
   const getAggregatedHistory = (rawHistory: PointHistoryItem[]): DayGroup[] => {
+      if (!rawHistory || rawHistory.length === 0) return [];
+
+      // 1. 按时间升序排序
+      const sortedRaw = [...rawHistory].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+      // 2. 按本地日期分组 (YYYY-MM-DD)
       const groups: { [key: string]: PointHistoryItem[] } = {};
-      rawHistory.forEach(item => {
-          const dateKey = new Date(item.date).toLocaleDateString(); 
+      sortedRaw.forEach(item => {
+          const d = new Date(item.date);
+          const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
           if (!groups[dateKey]) groups[dateKey] = [];
           groups[dateKey].push(item);
       });
+
+      // 3. 获取日期范围 (Start -> End)
+      const existingDates = Object.keys(groups).sort(); 
+      if (existingDates.length === 0) return [];
+
+      const startParts = existingDates[0].split('-').map(Number);
+      const endParts = existingDates[existingDates.length - 1].split('-').map(Number);
       
-      const dayKeys = Object.keys(groups).sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
+      // 使用本地时间中午 12 点以避免 DST 问题
+      const cursor = new Date(startParts[0], startParts[1] - 1, startParts[2], 12, 0, 0);
+      const endDate = new Date(endParts[0], endParts[1] - 1, endParts[2], 12, 0, 0);
       
-      return dayKeys.map((dateStr, index) => {
-          const items = groups[dateStr];
-          items.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      const denseGroups: DayGroup[] = [];
+      let lastKnownPoints = 0;
+
+      // 4. 连续遍历日期，填充空缺
+      while (cursor <= endDate) {
+          const dateStr = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`;
+          const items = groups[dateStr] || [];
           
-          const lastPoints = items[items.length - 1].points;
-          let diff = 0;
-          
-          if (index < dayKeys.length - 1) {
-              const prevDateStr = dayKeys[index + 1];
-              const prevItems = groups[prevDateStr];
-              prevItems.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-              const prevDayLastPoints = prevItems[prevItems.length - 1].points;
-              diff = lastPoints - prevDayLastPoints;
+          let dayGroup: DayGroup;
+
+          if (items.length > 0) {
+              const currentPoints = items[items.length - 1].points;
+              let diff = 0;
+              
+              if (denseGroups.length === 0) {
+                  diff = currentPoints - items[0].points;
+              } else {
+                  diff = currentPoints - lastKnownPoints;
+              }
+
+              dayGroup = {
+                  date: dateStr,
+                  timestamp: new Date(items[items.length-1].date).getTime(),
+                  points: currentPoints,
+                  diff,
+                  items,
+                  isGap: false
+              };
+              lastKnownPoints = currentPoints;
           } else {
-              diff = lastPoints - items[0].points; 
+              dayGroup = {
+                  date: dateStr,
+                  timestamp: cursor.getTime(),
+                  points: lastKnownPoints,
+                  diff: 0,
+                  items: [],
+                  isGap: true
+              };
           }
-          
-          return { 
-              date: dateStr, 
-              timestamp: new Date(dateStr).getTime(),
-              points: lastPoints, 
-              diff, 
-              items 
-          };
-      });
+
+          denseGroups.push(dayGroup);
+          cursor.setDate(cursor.getDate() + 1);
+          if (denseGroups.length > 2000) break;
+      }
+      
+      // 5. 返回降序 (最新的在最前)
+      return denseGroups.reverse();
   };
 
   const aggregatedHistory = getAggregatedHistory(account.pointHistory || []);
@@ -205,19 +262,15 @@ const MonitorModal: React.FC<MonitorModalProps> = ({ account, onClose, configLog
     const maxScore = Math.max(...scores);
     const rangeScore = maxScore - minScore || 1;
 
-    // Diff scaling (Right Y-Axis concept, mapped to bottom area)
     const diffs = chartData.map(d => d.diff);
     const minDiff = Math.min(...diffs, 0);
     const maxDiff = Math.max(...diffs, 100);
     const rangeDiff = maxDiff - minDiff || 1;
 
     const getX = (i: number) => paddingX + (i / (chartData.length - 1)) * (width - paddingX * 2);
-    // Score uses full height minus padding
     const getY_Score = (val: number) => height - paddingY - ((val - minScore) / rangeScore) * (height - paddingY - paddingTop);
-    // Diff uses bottom 30% of the chart area
     const getY_Diff = (val: number) => height - paddingY - ((val - minDiff) / rangeDiff) * (height - paddingY - paddingTop) * 0.3; 
 
-    // Path Generators
     const createPath = (getValue: (d: DayGroup) => number, getY: (v: number) => number) => {
         let path = `M ${getX(0)} ${getY(getValue(chartData[0]))}`;
         for (let i = 0; i < chartData.length - 1; i++) {
@@ -225,7 +278,7 @@ const MonitorModal: React.FC<MonitorModalProps> = ({ account, onClose, configLog
             const y0 = getY(getValue(chartData[i]));
             const x1 = getX(i + 1);
             const y1 = getY(getValue(chartData[i + 1]));
-            const cp1x = x0 + (x1 - x0) / 2; // Bezier control points
+            const cp1x = x0 + (x1 - x0) / 2;
             const cp1y = y0;
             const cp2x = x0 + (x1 - x0) / 2;
             const cp2y = y1;
@@ -260,13 +313,11 @@ const MonitorModal: React.FC<MonitorModalProps> = ({ account, onClose, configLog
         {/* Data Paths */}
         <path d={fillPath} fill="url(#scoreGradient)" />
         <path d={dScore} fill="none" stroke="#60A5FA" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-        {/* Diff line is subtle */}
         <path d={dDiff} fill="none" stroke="#FBBF24" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="4 4" opacity="0.6" />
         
         {/* X-Axis Date Labels (Adaptive) */}
         {chartData.map((d, i) => {
             const total = chartData.length;
-            // Determine density: show every Nth label
             let step = 1;
             if (total > 15) step = 2;
             if (total > 30) step = 5;
@@ -274,8 +325,9 @@ const MonitorModal: React.FC<MonitorModalProps> = ({ account, onClose, configLog
             if (i % step !== 0 && i !== total - 1) return null;
 
             const x = getX(i);
-            const dateObj = new Date(d.date);
-            const dateStr = `${dateObj.getMonth() + 1}/${dateObj.getDate()}`;
+            const [y, m, day] = d.date.split('-').map(Number);
+            const dateStr = `${m}/${day}`;
+            
             return (
                 <text key={`label-${i}`} x={x} y={height - 10} fill="#9CA3AF" fontSize="10" textAnchor="middle" className="select-none font-mono">
                     {dateStr}
@@ -303,26 +355,31 @@ const MonitorModal: React.FC<MonitorModalProps> = ({ account, onClose, configLog
                 <rect x={x - (width / chartData.length / 2)} y={paddingTop} width={width / chartData.length} height={height - paddingY} fill="transparent" />
                 
                 {/* Point Dots */}
-                {chartConfig.showPoints && <circle cx={x} cy={yS} r="3" fill="#1E40AF" stroke="#60A5FA" strokeWidth="2" />}
+                {chartConfig.showPoints && (
+                    <circle 
+                        cx={x} cy={yS} r="3" 
+                        fill={d.isGap ? '#111827' : '#1E40AF'} 
+                        stroke={d.isGap ? '#6B7280' : '#60A5FA'} 
+                        strokeWidth="2" 
+                    />
+                )}
                 
-                {/* Data Labels (Always Visible if enabled) */}
+                {/* Data Labels */}
                 {chartConfig.showLabels && (() => {
-                    // 碰撞检测逻辑：如果两个标签太近，将“增量”标签向下移动
                     const gap = Math.abs(yS - yD);
-                    const threshold = 20; // 像素阈值
+                    const threshold = 20; 
                     
                     let labelPosS = yS - 8;
                     let labelPosD = yD - 8;
 
-                    // 如果太近，强制将 diff 标签放到点下方
                     if (gap < threshold) {
                         labelPosD = yD + 15; 
                     }
 
                     return (
                         <>
-                            <text x={x} y={labelPosS} fill="#60A5FA" fontSize="9" textAnchor="middle" fontWeight="bold" className="pointer-events-none drop-shadow-md">{d.points}</text>
-                            <text x={x} y={labelPosD} fill="#FBBF24" fontSize="9" textAnchor="middle" fontWeight="bold" className="pointer-events-none drop-shadow-md">{d.diff > 0 ? `+${d.diff}` : d.diff}</text>
+                            <text x={x} y={labelPosS} fill={d.isGap ? '#9CA3AF' : '#60A5FA'} fontSize="9" textAnchor="middle" fontWeight="bold" className="pointer-events-none drop-shadow-md">{d.points}</text>
+                            <text x={x} y={labelPosD} fill={d.isGap ? '#6B7280' : '#FBBF24'} fontSize="9" textAnchor="middle" fontWeight="bold" className="pointer-events-none drop-shadow-md">{d.diff > 0 ? `+${d.diff}` : d.diff}</text>
                         </>
                     );
                 })()}
@@ -332,8 +389,8 @@ const MonitorModal: React.FC<MonitorModalProps> = ({ account, onClose, configLog
 
                 {/* Tooltip (ForeignObject) */}
                 <foreignObject x={x < width / 2 ? x : x - 120} y={paddingTop + 10} width="120" height="80" className="opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 overflow-visible">
-                   <div className={`bg-gray-900/95 backdrop-blur border border-gray-600 rounded-lg p-2 shadow-xl text-xs ${x < width/2 ? 'ml-2' : 'mr-2'}`}>
-                       <div className="text-gray-400 font-mono border-b border-gray-700 pb-1 mb-1 text-center">{d.date}</div>
+                   <div className={`bg-gray-900/95 backdrop-blur border ${d.isGap ? 'border-gray-700' : 'border-blue-500/50'} rounded-lg p-2 shadow-xl text-xs ${x < width/2 ? 'ml-2' : 'mr-2'}`}>
+                       <div className="text-gray-400 font-mono border-b border-gray-700 pb-1 mb-1 text-center">{d.date} {d.isGap && '(无记录)'}</div>
                        <div className="flex justify-between text-blue-300 font-bold"><span>Total:</span><span>{d.points}</span></div>
                        <div className="flex justify-between text-yellow-300 font-bold"><span>Diff:</span><span>{d.diff > 0 ? `+${d.diff}` : d.diff}</span></div>
                    </div>
@@ -421,24 +478,24 @@ const MonitorModal: React.FC<MonitorModalProps> = ({ account, onClose, configLog
                                <div className="text-[10px] text-gray-500 font-bold uppercase mb-1">Display Options</div>
                                <div className="flex items-center justify-between">
                                    <span className="text-xs text-gray-300">显示数据点</span>
-                                   <ToggleSwitch checked={chartConfig.showPoints} onChange={v => setChartConfig(prev => ({...prev, showPoints: v}))} />
+                                   <ToggleSwitch checked={chartConfig.showPoints} onChange={v => updateChartConfig({showPoints: v})} />
                                </div>
                                <div className="flex items-center justify-between">
                                    <span className="text-xs text-gray-300">显示纵向网格</span>
-                                   <ToggleSwitch checked={chartConfig.showGridLines} onChange={v => setChartConfig(prev => ({...prev, showGridLines: v}))} />
+                                   <ToggleSwitch checked={chartConfig.showGridLines} onChange={v => updateChartConfig({showGridLines: v})} />
                                </div>
                                <div className="flex items-center justify-between">
                                    <span className="text-xs text-gray-300">显示数据标签</span>
-                                   <ToggleSwitch checked={chartConfig.showLabels} onChange={v => setChartConfig(prev => ({...prev, showLabels: v}))} />
+                                   <ToggleSwitch checked={chartConfig.showLabels} onChange={v => updateChartConfig({showLabels: v})} />
                                </div>
                                
                                <div className="h-[1px] bg-gray-700 my-1"></div>
                                <div className="text-[10px] text-gray-500 font-bold uppercase mb-1">Date Range</div>
                                <div className="grid grid-cols-4 gap-1">
-                                   {[7, 15, 30, 0].map(d => (
+                                   {([7, 15, 30, 0] as DateRange[]).map(d => (
                                        <button 
                                            key={d}
-                                           onClick={() => setChartConfig(prev => ({...prev, dateRange: d as DateRange}))}
+                                           onClick={() => updateChartConfig({dateRange: d})}
                                            className={`text-[10px] py-1 rounded border ${chartConfig.dateRange === d ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-700 border-gray-600 text-gray-400 hover:text-white'}`}
                                        >
                                            {d === 0 ? 'All' : `${d}d`}
@@ -479,11 +536,12 @@ const MonitorModal: React.FC<MonitorModalProps> = ({ account, onClose, configLog
                                     <React.Fragment key={h.date}>
                                         <tr 
                                             onClick={() => setExpandedDate(isExpanded ? null : h.date)}
-                                            className={`transition-all cursor-pointer group relative ${isExpanded ? 'sticky top-[44px] z-20 shadow-md bg-gray-750' : 'hover:bg-gray-700/50 bg-gray-800'}`}
+                                            className={`transition-all cursor-pointer group relative ${isExpanded ? 'sticky top-[44px] z-20 shadow-md bg-gray-750' : 'hover:bg-gray-700/50 bg-gray-800'} ${h.isGap ? 'opacity-60' : ''}`}
                                         >
                                             <td className={`p-3 pl-4 font-mono flex items-center gap-2 border-b border-gray-700 ${isExpanded ? 'border-gray-600' : ''}`}>
                                                 <span className={`transform transition-transform text-gray-500 text-xs ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
                                                 {h.date}
+                                                {h.isGap && <span className="text-[10px] bg-gray-700 px-1 rounded text-gray-400 ml-1">无记录</span>}
                                             </td>
                                             <td className={`p-3 font-bold text-white font-mono tracking-wide border-b border-gray-700 ${isExpanded ? 'border-gray-600' : ''}`}>
                                                 {h.points.toLocaleString()}
@@ -497,12 +555,16 @@ const MonitorModal: React.FC<MonitorModalProps> = ({ account, onClose, configLog
                                                 <td colSpan={3} className="p-0 border-b border-gray-700">
                                                     <div className="p-3 pl-10 space-y-1 animate-in slide-in-from-top-2 fade-in duration-200">
                                                         <div className="text-[10px] text-gray-500 font-bold uppercase mb-2">详细记录 (Raw Log)</div>
-                                                        {h.items.map((detail, idx) => (
-                                                            <div key={idx} className="flex justify-between text-xs font-mono text-gray-400 border-b border-gray-700/30 last:border-0 pb-1 mb-1">
-                                                                <span>{new Date(detail.date).toLocaleTimeString()}</span>
-                                                                <span className="text-blue-300">{detail.points.toLocaleString()}</span>
-                                                            </div>
-                                                        ))}
+                                                        {h.items.length === 0 ? (
+                                                            <div className="text-xs text-gray-600 italic pb-2">此日无记录，积分延续自前一日</div>
+                                                        ) : (
+                                                            h.items.map((detail, idx) => (
+                                                                <div key={idx} className="flex justify-between text-xs font-mono text-gray-400 border-b border-gray-700/30 last:border-0 pb-1 mb-1">
+                                                                    <span>{new Date(detail.date).toLocaleTimeString()}</span>
+                                                                    <span className="text-blue-300">{detail.points.toLocaleString()}</span>
+                                                                </div>
+                                                            ))
+                                                        )}
                                                     </div>
                                                 </td>
                                             </tr>

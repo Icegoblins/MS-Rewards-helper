@@ -3,9 +3,9 @@ import { DEFAULT_UA_MOBILE } from '../types';
 
 export const CN_HEADERS = {
   "x-rewards-country": "cn",
-  "x-rewards-language": "zh",
+  "x-rewards-language": "zh-hans", // 微调：使用更标准的 zh-hans
   "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-  "x-rewards-appid": "SAAndroid/32.0.211024001",
+  "x-rewards-appid": "SAAndroid/32.2.430730002", // 确保为最新版
   "x-rewards-ismobile": "true",
   "x-rewards-partnerid": "startapp",
   "x-rewards-flights": "rwgobig",

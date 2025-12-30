@@ -82,11 +82,13 @@ export const getDashboardData = async (accessToken: string, proxyUrl: string, ig
         }
         
         // 2. Sapphire App 签到 (Gamification_Sapphire_DailyCheckIn)
-        else if (offerId === "gamification_sapphire_dailycheckin") {
+        // 增加对不带 Gamification 前缀的旧版 ID 兼容，以及确保 ID 匹配
+        else if (offerId.includes("sapphire_dailycheckin")) {
             // 修复：如果 max 值异常大 (如 11760)，强制修正为 7 或 14，避免 UI 进度条显示错误
             const fixedMax = (max > 31) ? 7 : (max > 0 ? max : 7);
             stats.checkInMax = fixedMax;
             stats.checkInProgress = progress;
+            console.log(`[Sapphire Detect] Found check-in: ${progress}/${fixedMax}`);
         }
 
         // 3. 搜索任务 (Search)

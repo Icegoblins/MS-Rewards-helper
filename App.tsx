@@ -1,7 +1,6 @@
-
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Account, AppConfig, LogEntry, SystemLog, WebDAVConfig } from './types';
-import { delay, getRandomUUID, checkCronMatch, getNextRunDate, formatTime, formatTimeWithMs, parseTokenInput, formatDuration } from './utils/helpers';
+import { delay, getRandomUUID, checkCronMatch, getNextRunDate, formatTime, formatTimeWithMs, parseTokenInput, formatDuration, getCurrentLocalISOString, generateAccountReport } from './utils/helpers';
 import * as Service from './services/msRewardsService';
 import { sendNotification } from './services/wxPusher';
 import AccountCard from './components/AccountCard';
@@ -48,6 +47,12 @@ const DEFAULT_CONFIG: AppConfig = {
   },
   autoIdleDelay: 5,
   monitorLogDays: 1,
+  monitorChartConfig: {
+      showPoints: true,
+      showGridLines: true,
+      showLabels: false,
+      dateRange: 30
+  },
   
   // UI Defaults
   clockPosition: 'right', 
@@ -130,37 +135,63 @@ const App: React.FC = () => {
 
   const sanitizeAccounts = (rawAccounts: any[]): Account[] => {
     if (!Array.isArray(rawAccounts)) return [];
-    return rawAccounts.map(acc => ({
-      id: acc.id || getRandomUUID(),
-      name: acc.name || '未命名账号',
-      refreshToken: acc.refreshToken || '',
-      accessToken: acc.accessToken,
-      tokenExpiresAt: acc.tokenExpiresAt,
-      status: acc.status === 'risk' ? 'risk' : 'idle', 
-      logs: Array.isArray(acc.logs) ? acc.logs.slice(-50) : [], 
-      lastRunTime: acc.lastRunTime,
-      lastDailySuccess: acc.lastDailySuccess,
-      totalPoints: typeof acc.totalPoints === 'number' ? acc.totalPoints : 0,
-      pointHistory: Array.isArray(acc.pointHistory) ? acc.pointHistory : [],
-      stats: {
-        readProgress: acc.stats?.readProgress || 0,
-        readMax: acc.stats?.readMax || 30,
-        pcSearchProgress: acc.stats?.pcSearchProgress || 0,
-        pcSearchMax: acc.stats?.pcSearchMax || 0,
-        mobileSearchProgress: acc.stats?.mobileSearchProgress || 0,
-        mobileSearchMax: acc.stats?.mobileSearchMax || 0,
-        checkInProgress: acc.stats?.checkInProgress || 0,
-        checkInMax: acc.stats?.checkInMax || 7,
-        dailyActivitiesProgress: acc.stats?.dailyActivitiesProgress || 0,
-        dailyActivitiesMax: acc.stats?.dailyActivitiesMax || 0,
-        dailySetProgress: acc.stats?.dailySetProgress || 0,
-        dailySetMax: acc.stats?.dailySetMax || 0,
-      },
-      enabled: acc.enabled !== false,
-      cronEnabled: acc.cronEnabled !== false, 
-      cronExpression: acc.cronExpression,
-      ignoreRisk: acc.ignoreRisk || false 
-    }));
+    return rawAccounts.map(acc => {
+      // 数据迁移：检查历史记录格式，将 UTC (Z结尾) 转换为本地 ISO String
+      const rawHistory = Array.isArray(acc.pointHistory) ? acc.pointHistory : [];
+      const migratedHistory = rawHistory.map((h: any) => {
+          if (h.date && typeof h.date === 'string' && h.date.endsWith('Z')) {
+              try {
+                  const d = new Date(h.date);
+                  const pad = (n: number) => n.toString().padStart(2, '0');
+                  const ms = d.getMilliseconds().toString().padStart(3, '0');
+                  // 重新格式化为本地时间字符串 (YYYY-MM-DDTHH:mm:ss.sss)
+                  const localStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${ms}`;
+                  return { ...h, date: localStr };
+              } catch (e) { return h; }
+          }
+          return h;
+      });
+
+      // 状态恢复逻辑修正：
+      // 如果之前是 running/refreshing 等中间态，重置为 idle。
+      // 如果是 success/error/risk 等终态，保留之，以便显示“快照”状态。
+      let restoredStatus = acc.status;
+      if (['running', 'refreshing', 'waiting'].includes(acc.status) || !acc.status) {
+          restoredStatus = 'idle';
+      }
+
+      return {
+        id: acc.id || getRandomUUID(),
+        name: acc.name || '未命名账号',
+        refreshToken: acc.refreshToken || '',
+        accessToken: acc.accessToken,
+        tokenExpiresAt: acc.tokenExpiresAt,
+        status: restoredStatus, 
+        logs: Array.isArray(acc.logs) ? acc.logs.slice(-50) : [], 
+        lastRunTime: acc.lastRunTime,
+        lastDailySuccess: acc.lastDailySuccess,
+        totalPoints: typeof acc.totalPoints === 'number' ? acc.totalPoints : 0,
+        pointHistory: migratedHistory,
+        stats: {
+            readProgress: acc.stats?.readProgress || 0,
+            readMax: acc.stats?.readMax || 30,
+            pcSearchProgress: acc.stats?.pcSearchProgress || 0,
+            pcSearchMax: acc.stats?.pcSearchMax || 0,
+            mobileSearchProgress: acc.stats?.mobileSearchProgress || 0,
+            mobileSearchMax: acc.stats?.mobileSearchMax || 0,
+            checkInProgress: acc.stats?.checkInProgress || 0,
+            checkInMax: acc.stats?.checkInMax || 7,
+            dailyActivitiesProgress: acc.stats?.dailyActivitiesProgress || 0,
+            dailyActivitiesMax: acc.stats?.dailyActivitiesMax || 0,
+            dailySetProgress: acc.stats?.dailySetProgress || 0,
+            dailySetMax: acc.stats?.dailySetMax || 0,
+        },
+        enabled: acc.enabled !== false,
+        cronEnabled: acc.cronEnabled !== false, 
+        cronExpression: acc.cronExpression,
+        ignoreRisk: acc.ignoreRisk || false 
+      };
+    });
   };
 
   const [accounts, setAccounts] = useState<Account[]>(() => sanitizeAccounts(safeJsonParse('ms_rewards_accounts', [])));
@@ -193,7 +224,9 @@ const App: React.FC = () => {
          layoutGap: loaded.layoutGap ?? DEFAULT_CONFIG.layoutGap,
          containerPadding: loaded.containerPadding ?? DEFAULT_CONFIG.containerPadding,
          allowSinglePush: loaded.allowSinglePush ?? DEFAULT_CONFIG.allowSinglePush,
-         skipDailyCompleted: loaded.skipDailyCompleted ?? DEFAULT_CONFIG.skipDailyCompleted
+         skipDailyCompleted: loaded.skipDailyCompleted ?? DEFAULT_CONFIG.skipDailyCompleted,
+         // 确保 monitorChartConfig 存在 (合并默认值)
+         monitorChartConfig: { ...DEFAULT_CONFIG.monitorChartConfig, ...loaded.monitorChartConfig }
      };
   });
   
@@ -299,7 +332,37 @@ const App: React.FC = () => {
   }, []);
 
   const humanDelay = async (accountId: string) => { const ms = Math.floor(Math.random() * (config.maxDelay - config.minDelay + 1) + config.minDelay) * 1000; addLog(accountId, `等待随机延迟 ${ms/1000}秒...`); await delay(ms); };
-  const recordPointHistory = (accountId: string, points: number) => { if (!points) return; setAccounts(prev => prev.map(acc => { if (acc.id === accountId) { const history = acc.pointHistory || []; const last = history[history.length - 1]; if (last && last.points === points) { const lastDate = new Date(last.date).toDateString(); const today = new Date().toDateString(); if (lastDate === today) { return acc; } } if (last && (Date.now() - new Date(last.date).getTime() < 60000)) { last.points = points; last.date = new Date().toISOString(); return { ...acc, pointHistory: [...history] }; } const newHistory = [...history, { date: new Date().toISOString(), points }]; if (newHistory.length > 200) newHistory.shift(); return { ...acc, pointHistory: newHistory }; } return acc; })); };
+  
+  // 核心修改：使用 getCurrentLocalISOString() 记录本地时间
+  const recordPointHistory = (accountId: string, points: number) => { 
+      if (!points) return; 
+      setAccounts(prev => prev.map(acc => { 
+          if (acc.id === accountId) { 
+              const history = acc.pointHistory || []; 
+              const last = history[history.length - 1]; 
+              
+              const currentLocalTimeStr = getCurrentLocalISOString(); // 使用本地时间字符串
+
+              if (last && last.points === points) { 
+                  // 比较时使用 new Date() 会自动兼容 UTC 和 Local 字符串
+                  const lastDate = new Date(last.date).toDateString(); 
+                  const today = new Date().toDateString(); 
+                  if (lastDate === today) { return acc; } 
+              } 
+              
+              if (last && (Date.now() - new Date(last.date).getTime() < 60000)) { 
+                  last.points = points; 
+                  last.date = currentLocalTimeStr; // 更新最后一条为本地时间
+                  return { ...acc, pointHistory: [...history] }; 
+              } 
+              
+              const newHistory = [...history, { date: currentLocalTimeStr, points }]; 
+              if (newHistory.length > 200) newHistory.shift(); 
+              return { ...acc, pointHistory: newHistory }; 
+          } 
+          return acc; 
+      })); 
+  };
   
   const triggerAutoBackup = async () => {
       if (!config.localBackup?.enabled) return;
@@ -379,7 +442,7 @@ const App: React.FC = () => {
                  if (res.success) {
                      currentProgress++; 
                      updateAccountStatus(id, 'running', { stats: { ...dashboard.stats, readProgress: currentProgress } });
-                     addLog(id, `阅读 ${currentProgress}/${max} 完成 | 积分 +1 (预估) | 等待下轮...`);
+                     addLog(id, `阅读 ${currentProgress}/${max} 完成 | 积分 +1 | 等待下轮...`);
                  } else {
                      addLog(id, `阅读尝试失败: ${res.message}`, 'warning');
                  }
@@ -438,37 +501,6 @@ const App: React.FC = () => {
     }
   };
 
-  const generateAccountReportBlock = (account: Account, result: { earned: number, totalPoints: number, status: string }, index: number) => {
-      // (保持原有逻辑)
-      const statusStr = result.status === 'success' ? '✅ 成功' : result.status === 'risk' ? '🚨 风险' : '❌ 失败';
-      
-      let diffYesterday = 0;
-      if (account.pointHistory && account.pointHistory.length > 0) {
-          const todayStr = new Date().toDateString();
-          const lastRecordNotToday = [...account.pointHistory].reverse().find(h => new Date(h.date).toDateString() !== todayStr);
-          if (lastRecordNotToday) {
-              diffYesterday = result.totalPoints - lastRecordNotToday.points;
-          }
-      }
-      const diffStr = diffYesterday >= 0 ? `+${diffYesterday}` : `${diffYesterday}`;
-
-      const s = account.stats;
-      const readStr = `${s.readProgress}/${s.readMax}`;
-      const pcStr = `${s.pcSearchProgress}/${s.pcSearchMax}`;
-      const mobStr = `${s.mobileSearchProgress}/${s.mobileSearchMax}`;
-      const actStr = `${s.dailyActivitiesProgress || 0}/${s.dailyActivitiesMax || 0}`;
-      const checkInStr = s.checkInProgress ? `已签 ${s.checkInProgress} 天` : '未签到';
-
-      return `[${index}] ${account.name}
-● 状态: ${statusStr}
-● 积分: ${result.totalPoints.toLocaleString()} (本轮+${result.earned} | 较昨日${diffStr})
-● 阅读: ${readStr}
-● 搜索: 电脑 ${pcStr} | 移动 ${mobStr}
-● 活动: ${actStr}
-● 签到: SAPPHIRE ${checkInStr}
------------------------`;
-  };
-
   // 稳定引用：单账号运行
   const runSingleAccountAutomatically = async (accountId: string, isManual: boolean) => {
       const account = accounts.find(a => a.id === accountId);
@@ -491,7 +523,11 @@ const App: React.FC = () => {
           );
 
           if (targets.length > 0) {
-              const reportBlock = generateAccountReportBlock(account, result, 1);
+              const reportBlock = generateAccountReport(account, 1, { 
+                  earned: result.earned, 
+                  totalPoints: result.totalPoints,
+                  status: result.status 
+              });
               const content = `
 \`\`\`text
 M S   R E W A R D S
@@ -601,14 +637,6 @@ ${reportBlock}
       stopTaskRef.current = false;
       const source = isAuto ? 'Scheduler' : 'User';
       
-      // 注意：这里需要直接读取 accountsRef 和 configRef，因为函数闭包内是旧值
-      // 但为了简单，我们在组件外层用 useRef 代理了最新的 accounts 和 config
-      // 然而 handleRunAll 实际上是在组件渲染时定义的，它闭包里有 accounts。
-      // 所以我们不能在这里直接读 Ref，而是应该依赖于 accounts 状态。
-      // 这里的优化点在于：调度器 (setInterval) 如何调用这个函数。
-      
-      // 方案调整：我们将逻辑移入 useEffect 内部，不再依赖 handleRunAll 的闭包。
-      
       const targets = accounts.filter(a => {
           if (a.enabled === false) return false;
           if (a.status === 'risk') return false;
@@ -666,7 +694,11 @@ ${reportBlock}
 
                   targetResults.forEach((item, idx) => {
                       totalEarned += item.result.earned;
-                      reportBody += generateAccountReportBlock(item.account, item.result, idx + 1) + "\n";
+                      reportBody += generateAccountReport(item.account, idx + 1, {
+                          earned: item.result.earned,
+                          totalPoints: item.result.totalPoints,
+                          status: item.result.status
+                      }) + "\n";
                   });
 
                   const pool = accounts
@@ -798,27 +830,6 @@ ${reportBody.trim()}
               // 防止1分钟内多次触发 (60s buffer)
               if (nowTs - lastRun > 60000) {
                   if (checkCronMatch(currentConfig.cron.cronExpression, now)) {
-                       // 触发逻辑：这里必须调用 handleRunAll(true)
-                       // 由于是在 useEffect 内部，且 handleRunAll 有依赖，这里会有闭包问题
-                       // 但我们已经在上方定义 handleRunAll 时使用了 useCallback，
-                       // 所以这里直接调用组件作用域内的 handleRunAll 实际上是安全的吗？
-                       // 不，因为 useEffect 依赖列表为空。
-                       // 解决方案：这里我们不直接调用，而是设置一个标志位或者强制刷新。
-                       // 更简单的方案：在这里直接手动 click 那个按钮? 不行。
-                       
-                       // 正确做法：既然我们已经有了最新的 Ref，我们可以在这里直接调用 `handleRunAll(true)`，
-                       // 但前提是 handleRunAll 也是 Ref 或者稳定的。
-                       // 让我们简化：只在这个 useEffect 里使用 handleRunAll，并将其加入依赖？
-                       // 不行，因为 handleRunAll 依赖 accounts，会导致 interval 重置。
-                       
-                       // 终极方案：在该 useEffect 内部，如果触发了条件，则通过 setTriggerRun 状态来通知。
-                       // 但这样会导致一次重渲染。
-                       
-                       // 这里我们采用直接调用 handleRunAll 的方式，但忽略 lint 警告，
-                       // 因为我们知道 handleRunAll 在每次 render 时都会更新闭包。
-                       // 只要这个 useEffect 每次 render 都重新挂载... 不，我们就是要避免重新挂载。
-                       
-                       // 所以，我们必须使用一个 Ref 来存储最新的 handleRunAll 函数。
                        handleRunAllRef.current(true);
                   }
               }
@@ -863,7 +874,7 @@ ${reportBody.trim()}
               {/* Left */}
               <div className="flex items-center gap-4">
                   <div className="w-10 h-10 rounded-lg bg-gradient-to-tr from-blue-600 to-purple-600 flex items-center justify-center font-bold text-xl text-white shadow-lg shadow-blue-900/50 shrink-0">M</div>
-                  <h1 className="text-xl font-bold tracking-wide text-gray-200 hidden lg:block truncate">MS Rewards 多账号助手 <span className="text-sm text-gray-500 font-normal ml-1">v3.9.1</span></h1>
+                  <h1 className="text-xl font-bold tracking-wide text-gray-200 hidden lg:block truncate">MS Rewards 多账号助手 <span className="text-sm text-gray-500 font-normal ml-1">v3.9.2</span></h1>
                   {config.clockPosition !== 'right' && <HeaderClock />}
               </div>
 
@@ -1083,12 +1094,13 @@ ${reportBody.trim()}
       <MonitorModal 
           account={accounts.find(a => a.id === monitorAccountId) || null} 
           onClose={() => setMonitorAccountId(null)} 
-          configLogDays={config.monitorLogDays}
+          config={config} 
+          onUpdateConfig={setConfig}
       />
       <WebDAVModal isOpen={showWebDAV} onClose={() => setShowWebDAV(false)} config={config} accounts={accounts} onUpdateConfig={(key, val) => setConfig(prev => ({...prev, [key]: val}))} onImportAccounts={handleWebDAVImport} addSystemLog={addSystemLog} />
       <DataManageModal isOpen={showDataManage} onClose={() => setShowDataManage(false)} accounts={accounts} config={config} onImport={handleDataImport} addSystemLog={addSystemLog} />
       <GlobalSettingsModal isOpen={showGlobalSettings} onClose={() => setShowGlobalSettings(false)} config={config} onUpdateConfig={setConfig} />
-      <WxPusherModal isOpen={showWxPusher} onClose={() => setShowWxPusher(false)} config={config} accounts={accounts} onUpdateConfig={setConfig} />
+      <WxPusherModal isOpen={showWxPusher} onClose={() => setShowWxPusher(false)} config={config} accounts={accounts} onUpdateConfig={setConfig} addSystemLog={addSystemLog} />
       <TaskSchedulerModal isOpen={showCronSettings} onClose={() => setShowCronSettings(false)} config={config} onUpdateConfig={setConfig} />
       <LayoutSettingsModal 
           isOpen={showLayoutSettings} 

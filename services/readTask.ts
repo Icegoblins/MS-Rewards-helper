@@ -1,6 +1,6 @@
 
 import { DEFAULT_UA_MOBILE } from '../types';
-import { fetchWithProxy, checkRisk } from './request';
+import { fetchWithProxy, checkRisk, CN_HEADERS } from './request';
 
 // 生成 64 字符的十六进制字符串 (模仿 Python secrets.token_hex(32))
 const genHexId = (): string => {
@@ -15,26 +15,23 @@ export const taskRead = async (accessToken: string, proxyUrl: string, ignoreRisk
     // URL 清理：去除查询参数
     const url = "https://prod.rewardsplatform.microsoft.com/dapi/me/activities";
     
-    // 构造与 Python 脚本一致的 Headers
+    // 构造 Headers
     const headers = {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${accessToken}`,
-        "User-Agent": DEFAULT_UA_MOBILE, // 保持移动端 UA
+        "User-Agent": DEFAULT_UA_MOBILE,
         "Accept-Encoding": "gzip",
-        "x-rewards-partnerid": "startapp",
-        "x-rewards-appid": "SAAndroid/32.2.430730002", // 升级 AppID 版本
-        "x-rewards-country": "cn",
-        "x-rewards-language": "zh-hans",
-        "x-rewards-flights": "rwgobig"
+        ...CN_HEADERS 
     };
 
     const payload = {
         "amount": 1,
         "country": "cn",
-        "id": genHexId(), // 64 char hex string
+        "id": genHexId(), // 64 char hex string for reading
         "type": 101,
         "attributes": { 
-            "offerid": "ENUS_readarticle3_30points" 
+            "offerid": "ENUS_readarticle3_30points",
+            "timezoneOffset": "08:00:00" // 补充时区信息
         }
     };
 

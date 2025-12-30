@@ -1,6 +1,6 @@
 
 import { getRandomUUID } from '../utils/helpers';
-import { fetchWithProxy, checkRisk } from './request';
+import { fetchWithProxy, checkRisk, CN_HEADERS } from './request';
 
 // 获取北京时间 (UTC+8) 的日期数值 (YYYYMMDD) - 返回 Number
 const getBeijingDateNum = (): number => {
@@ -14,21 +14,22 @@ const getBeijingDateNum = (): number => {
     return parseInt(`${year}${month}${day}`, 10);
 };
 
-// 基础 URL (不带 Query Params，避免风控)
+// 基础 URL
 const BASE_ACTIVITY_URL = "https://prod.rewardsplatform.microsoft.com/dapi/me/activities";
 
-// 定义统一的请求头，模拟 Android 原生客户端行为
+// 定义统一的请求头
 const COMMON_HEADERS = (accessToken: string) => ({
     "Content-Type": "application/json",
     "Accept": "application/json",
-    "channel": "SAAndroid",
-    "User-Agent": "okhttp/4.9.1", // 关键：使用底层网络库 UA 而非浏览器 UA
-    "Authorization": `Bearer ${accessToken}`
+    "User-Agent": "okhttp/4.9.1", 
+    "Authorization": `Bearer ${accessToken}`,
+    "channel": "SAAndroid", 
+    ...CN_HEADERS 
 });
 
 // ----------------------------------------------------------------
-// 子任务 A: 通用移动端签到 (Type 103)
-// 作用：维持 App 活跃状态 (Heartbeat)，通常不直接给分
+// 子任务 A: 通用移动端活跃心跳 (Type 103)
+// 作用：维持 App 活跃状态，不仅是为了拿分，也是为了激活其他移动端任务
 // ----------------------------------------------------------------
 const signType103 = async (accessToken: string, proxyUrl: string, ignoreRisk: boolean): Promise<{ points: number; msg: string; success: boolean }> => {
     try {
@@ -39,7 +40,10 @@ const signType103 = async (accessToken: string, proxyUrl: string, ignoreRisk: bo
                 headers: COMMON_HEADERS(accessToken), 
                 body: JSON.stringify({ 
                     "amount": 1, 
-                    "attributes": {}, 
+                    "attributes": {
+                        "client": "android",
+                        "timezoneOffset": "08:00:00" // 补充时区
+                    }, 
                     "id": getRandomUUID(), 
                     "type": 103, 
                     "country": "cn", 
@@ -55,40 +59,83 @@ const signType103 = async (accessToken: string, proxyUrl: string, ignoreRisk: bo
         if (riskMsg && !ignoreRisk && !riskMsg.includes("Suspended") && !riskMsg.includes("403")) {
              // 仅记录不中断
         } else if (riskMsg && !ignoreRisk) {
-             return { points: 0, msg: `通用Risk: ${riskMsg}`, success: false };
+             return { points: 0, msg: `Type 103 风控`, success: false };
         }
 
-        if (data.error) return { points: 0, msg: `通用错误: ${data.message || data.code}`, success: false };
-        
         let earned = 0;
         if (data?.response?.activity?.p) earned = Number(data.response.activity.p);
         
-        // 103 只要不报错就算成功
-        if (earned > 0) return { points: earned, msg: `通用签到+${earned}`, success: true };
-        return { points: 0, msg: "通用活跃已发", success: true };
+        if (earned > 0) return { points: earned, msg: `Type 103:+${earned}`, success: true };
+        return { points: 0, msg: "Type 103:Activation", success: true };
     } catch (e: any) {
-        return { points: 0, msg: `通用异常`, success: false };
+        return { points: 0, msg: `Type 103 异常`, success: false };
     }
 };
 
 // ----------------------------------------------------------------
-// 子任务 B: Sapphire APP 签到 (Type 101)
-// 作用：获取每日签到奖励 (通常 10-20 分)
+// 子任务 B: Mobile App Bonus (Type 101) [新增]
+// 作用：明确领取“使用 Start/Bing App”的 30 积分
+// 注意：这经常是 Type 103 不给分时的真正得分点
+// ----------------------------------------------------------------
+const signMobileBonus = async (accessToken: string, proxyUrl: string, ignoreRisk: boolean): Promise<{ points: number; msg: string; success: boolean }> => {
+    try {
+        const response = await fetchWithProxy(
+            BASE_ACTIVITY_URL, 
+            { 
+                method: "POST", 
+                headers: COMMON_HEADERS(accessToken), 
+                body: JSON.stringify({ 
+                    "amount": 1, 
+                    "attributes": {
+                        "offerid": "Gamification_Sapphire_MobileAppBonus",
+                        "timezoneOffset": "08:00:00"
+                    }, 
+                    "id": getRandomUUID(), 
+                    "type": 101, 
+                    "country": "cn", 
+                    "risk_context": {}, 
+                    "channel": "SAAndroid" 
+                }) 
+            }, 
+            proxyUrl
+        );
+        const data = await response.json();
+        
+        const riskMsg = checkRisk(data, response.status);
+        if (riskMsg && !ignoreRisk) {
+             if (riskMsg.includes("Suspended") || riskMsg.includes("403")) return { points: 0, msg: `Bonus风控`, success: false };
+        }
+
+        let earned = 0;
+        if (data?.response?.activity?.p) earned = Number(data.response.activity.p);
+        
+        if (earned > 0) return { points: earned, msg: `Bonus:+${earned}`, success: true };
+        
+        // 如果这里也没分，且没有错误，可能是已经领过了
+        if (!data.error) return { points: 0, msg: "Bonus:OK", success: true };
+        
+        return { points: 0, msg: "Bonus:无", success: true };
+    } catch (e: any) {
+        return { points: 0, msg: `Bonus异常`, success: false };
+    }
+};
+
+// ----------------------------------------------------------------
+// 子任务 C: Sapphire APP 每日签到 (Type 101)
+// 作用：获取每日签到奖励 (Check-in streak)
 // ----------------------------------------------------------------
 const signSapphire = async (accessToken: string, proxyUrl: string, ignoreRisk: boolean): Promise<{ points: number; msg: string; success: boolean }> => {
     const todayNum = getBeijingDateNum();
-    console.log(`[Task] Executing Sapphire Sign-in (101)... Date=${todayNum}`);
 
-    // 关键 Payload 结构 (已验证成功)
     const payload = {
         "amount": 1,
         "attributes": {
             "offerid": "Gamification_Sapphire_DailyCheckIn",
-            "date": todayNum, // 必须是整数格式 YYYYMMDD
-            "signIn": false,  // 必须是布尔值 false (反直觉但必需)
-            "timezoneOffset": "08:00:00" // 必须是字符串格式
+            "date": todayNum, 
+            "signIn": false, 
+            "timezoneOffset": "08:00:00"
         },
-        "id": "", // 必须为空字符串
+        "id": getRandomUUID(), 
         "type": 101, 
         "country": "cn",
         "risk_context": {},
@@ -107,77 +154,61 @@ const signSapphire = async (accessToken: string, proxyUrl: string, ignoreRisk: b
         );
         const data = await response.json();
 
-        // 检查风控
         const riskMsg = checkRisk(data, response.status);
         if (riskMsg && !ignoreRisk) {
             if (riskMsg.includes("Suspended") || riskMsg.includes("403")) {
-                return { points: 0, msg: `Sapphire Risk: ${riskMsg}`, success: false };
+                return { points: 0, msg: `SAPPHIRE 风控`, success: false };
             }
         }
 
-        // 检查错误 (重复签到等)
         if (data.error) {
             const errDesc = data.error.description || data.message || "";
-            // 如果是 Duplicate 或 Already done，视为成功状态
             if (errDesc.toLowerCase().includes("duplicate") || errDesc.toLowerCase().includes("already")) {
-                return { points: 0, msg: "Sapphire已签", success: true };
+                return { points: 0, msg: "SAPPHIRE:已签", success: true };
             }
-            return { points: 0, msg: `Sapphire错误: ${errDesc}`, success: false };
+            return { points: 0, msg: `SAPPHIRE 错误`, success: false };
         }
 
-        // 提取积分
         let earned = 0;
         if (data?.response?.activity?.p) earned = Number(data.response.activity.p);
 
         if (earned > 0) {
-            return { points: earned, msg: `Sapphire签到+${earned}`, success: true };
+            return { points: earned, msg: `SAPPHIRE:+${earned}`, success: true };
         }
-        
-        // 成功但0分，通常意味着今日已签但未触发重复错误，也视为成功
-        return { points: 0, msg: "Sapphire完成(0分)", success: true };
+        return { points: 0, msg: "SAPPHIRE:OK", success: true };
 
     } catch (e: any) {
-        console.error(`[Sapphire] Error:`, e);
-        return { points: 0, msg: `Sapphire异常: ${e.message}`, success: false };
+        return { points: 0, msg: `SAPPHIRE 异常`, success: false };
     }
 };
 
 // ----------------------------------------------------------------
-// 主入口：执行双重签到
+// 主入口：执行三重签到 (活跃 -> Bonus -> 每日签到)
 // ----------------------------------------------------------------
 export const taskSign = async (accessToken: string, proxyUrl: string, ignoreRisk: boolean = false): Promise<{ success: boolean; points: number; message: string }> => {
   try {
-    // 1. 执行通用签到 (Type 103)
+    // 1. 活跃心跳 (Type 103)
     const res1 = await signType103(accessToken, proxyUrl, ignoreRisk);
-    
-    // 随机延迟 (模拟真实操作间隔)
-    await new Promise(r => setTimeout(r, 2000 + Math.random() * 2000));
+    await new Promise(r => setTimeout(r, 1500));
 
-    // 2. 执行 Sapphire 签到 (Type 101)
-    const res2 = await signSapphire(accessToken, proxyUrl, ignoreRisk);
+    // 2. 移动端奖励 (Type 101 Bonus) - 解决 103 不给分的问题
+    const res2 = await signMobileBonus(accessToken, proxyUrl, ignoreRisk);
+    await new Promise(r => setTimeout(r, 1500));
 
-    // 汇总结果
-    const totalPoints = res1.points + res2.points;
+    // 3. 每日签到 (Type 101 CheckIn)
+    const res3 = await signSapphire(accessToken, proxyUrl, ignoreRisk);
+
+    const totalPoints = res1.points + res2.points + res3.points;
+    const isSuccess = res1.success || res2.success || res3.success; 
     
-    // 只要 Sapphire 成功 (无论拿分还是已签)，或者 103 成功，整体都算 Pass
-    // 重点在于 Sapphire 的状态
-    const isSuccess = res2.success; 
-    
-    // 构造合并消息
-    let finalMsg = "";
-    
-    if (res1.points > 0 || res2.points > 0) {
-        // 如果有拿分，详细显示
-        finalMsg = `双重签到: +${totalPoints} (通用:+${res1.points}, Sapphire:+${res2.points})`;
-    } 
-    else if (res2.msg.includes("已签") || res2.msg.includes("完成")) {
-        // 如果 Sapphire 明确显示已完成
-        finalMsg = "今日双重签到已完成";
-    } 
-    else {
-        // 其他情况 (如失败或无响应)
-        finalMsg = `[通用] ${res1.msg} | [Sapphire] ${res2.msg}`;
-    }
+    // 构造详细日志
+    // 示例: [103:活跃] [Bonus:+30] [CheckIn:已签]
+    const msgParts = [];
+    if (res1.msg !== "103:活跃") msgParts.push(`[${res1.msg}]`); // 只有异常或得分才显示 103，否则它是静默的
+    msgParts.push(`[${res2.msg}]`);
+    msgParts.push(`[${res3.msg}]`);
+
+    const finalMsg = `${totalPoints > 0 ? `+${totalPoints}分 ` : ''}${msgParts.join(' ')}`;
 
     return { 
         success: isSuccess, 

@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Account, LogEntry, AppConfig } from '../types';
 import ToggleSwitch from './ToggleSwitch';
@@ -343,9 +344,9 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
   const isAccountEnabled = account.enabled !== false;
   const isCronEnabled = account.cronEnabled !== false;
 
+  // 只要有积分数据(说明成功获取过Dashboard) 或者 刚运行过，就视为有数据可展示
   const isRunToday = account.lastRunTime && new Date(account.lastRunTime).toDateString() === new Date().toDateString();
-  const isSuccessToday = isRunToday && account.status === 'success';
-  const hasData = isRunToday; 
+  const hasData = account.totalPoints > 0 || isRunToday;
 
   const sapphireDays = account.stats.checkInProgress || 0;
   let sapphireText = "待更新";
@@ -353,17 +354,12 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
       sapphireText = sapphireDays > 0 ? `🔥 已签 ${sapphireDays} 天` : "未签到";
   }
 
-  let webText = "待更新";
-  if (hasData) {
-      if (account.webCheckInStreak && account.webCheckInStreak > 0) {
-          webText = `🔥 已签 ${account.webCheckInStreak} 天`;
-      } else {
-          webText = "未签到";
-      }
-  }
+  // Type 103 状态逻辑
+  const isType103Done = !!(account.lastDailySuccess && new Date(account.lastDailySuccess).toDateString() === new Date().toDateString());
+  const type103Text = isType103Done ? "Activation" : "未激活";
 
+  const isSuccessToday = isRunToday && account.status === 'success';
   const sapphireForceFull = isSuccessToday || sapphireDays > 0;
-  const webForceFull = hasData && (account.webCheckInStreak || 0) > 0;
 
   return (
     <>
@@ -613,18 +609,18 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onRemove, onOpenMoni
               <EnergyBar 
                   current={account.stats.checkInProgress || 0} 
                   max={Math.max(account.stats.checkInMax || 0, 1)} 
-                  label="Sapphire 每日签到" 
+                  label="Sapphire 签到" 
                   type="checkin" 
                   customText={sapphireText} 
                   forceFull={sapphireForceFull} 
               />
               <EnergyBar 
-                  current={account.stats.dailySetProgress || 0} 
-                  max={Math.max(account.stats.dailySetMax || 0, 1)} 
-                  label="Web 每日签到" 
+                  current={isType103Done ? 1 : 0} 
+                  max={1} 
+                  label="Type 103" 
                   type="daily" 
-                  customText={webText} 
-                  forceFull={webForceFull} 
+                  customText={type103Text} 
+                  forceFull={isType103Done} 
               />
           </div>
       </div>

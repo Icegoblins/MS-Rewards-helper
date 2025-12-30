@@ -158,8 +158,8 @@ const DataManageModal: React.FC<DataManageModalProps> = ({ isOpen, onClose, acco
                 id: acc.id || getRandomUUID(),
                 logs: Array.isArray(acc.logs) ? acc.logs : [], 
                 pointHistory: Array.isArray(acc.pointHistory) ? acc.pointHistory : [],
-                // 修复：保留 Risk 状态，其他非持久状态重置为 idle
-                status: acc.status === 'risk' ? 'risk' : 'idle',
+                // 修复逻辑：保留 risk/success/error 状态，仅将 running/refreshing 等中间态重置为 idle
+                status: (['running', 'refreshing', 'waiting'].includes(acc.status) || !acc.status) ? 'idle' : acc.status,
                 // 导入时如果字段缺失，默认启用
                 enabled: acc.enabled !== false 
               }));
